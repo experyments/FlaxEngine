@@ -178,7 +178,7 @@ void ExponentialHeightFog::GetExponentialHeightFogData(const RenderView& view, S
     result.VolumetricFogMaxDistance = VolumetricFogDistance;
 }
 
-GPU_CB_STRUCT(Data {
+GPU_CB_STRUCT(Data{
     ShaderGBufferData GBuffer;
     ShaderExponentialHeightFogData ExponentialHeightFog;
     ShaderVolumetricFogData VolumetricFog;

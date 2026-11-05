@@ -68,6 +68,7 @@ float4 GetExponentialHeightFog(ExponentialHeightFogData exponentialHeightFog, fl
     float3 inscatteringColor = exponentialHeightFog.FogInscatteringColor;
     float3 directionalInscattering = 0;
     BRANCH
+
     if (exponentialHeightFog.ApplyDirectionalInscattering > 0)
     {
         float3 directionalLightInscattering = exponentialHeightFog.DirectionalInscatteringColor * pow(saturate(dot(cameraToReceiverNorm, exponentialHeightFog.InscatteringLightDirection)), exponentialHeightFog.DirectionalInscatteringExponent);
@@ -78,6 +79,7 @@ float4 GetExponentialHeightFog(ExponentialHeightFogData exponentialHeightFog, fl
 
     // Disable fog after a certain distance
     FLATTEN
+
     if (exponentialHeightFog.FogCutoffDistance > 0 && sceneDistance > exponentialHeightFog.FogCutoffDistance)
     {
         expFogFactor = 1;
