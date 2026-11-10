@@ -31,6 +31,7 @@
 #include <ThirdParty/PhysX/PxQueryFiltering.h>
 #include <ThirdParty/PhysX/extensions/PxFixedJoint.h>
 #include <ThirdParty/PhysX/extensions/PxSphericalJoint.h>
+#include <cstring>
 #if WITH_VEHICLE
 #include "Engine/Core/Collections/Sorting.h"
 #include "Engine/Physics/Actors/WheeledVehicle.h"
@@ -131,6 +132,10 @@ class ErrorPhysX : public PxErrorCallback
 {
     void reportError(PxErrorCode::Enum code, const char* message, const char* file, int line) override
     {
+        if (code == PxErrorCode::eDEBUG_WARNING && message &&
+            std::strcmp(message, "TriangleMesh: triangles are too big, reduce their size to increase simulation stability!") == 0)
+            return;
+
         LOG(Error, "PhysX Error! Code: {0}.\n{1}\nSource: {2} : {3}.", static_cast<int32>(code), String(message), String(file), line);
     }
 };
