@@ -1,5 +1,11 @@
 // Copyright (c) Wojciech Figat. All rights reserved.
 
+#if USE_LARGE_WORLDS
+using Real = System.Double;
+#else
+using Real = System.Single;
+#endif
+
 using System;
 using System.Linq;
 using FlaxEditor.Content;
@@ -195,6 +201,18 @@ namespace FlaxEditor.Viewport
             var editorBounds = actor.EditorBoundingBoxWithChildren;
             var bottomToCenter = actor.Position.Y - editorBounds.Minimum.Y;
             var location = hitLocation + new Vector3(0, bottomToCenter, 0);
+            var gravityCenter = Vector3.Zero;
+            var gravityUp = Float3.Zero;
+            var alignToGravity = actor is ModelInstanceActor &&
+                                 _viewport is MainEditorGizmoViewport mainViewport &&
+                                 mainViewport.TryGetGravityCenter(out gravityCenter) &&
+                                 TryGetGravityUp(hitLocation, gravityCenter, out gravityUp);
+            if (alignToGravity)
+            {
+                var actorUp = Float3.Up * actor.Orientation;
+                bottomToCenter = GetBoundsBottomOffset(editorBounds, actorUp);
+                location = hitLocation + new Vector3(gravityUp.X, gravityUp.Y, gravityUp.Z) * bottomToCenter;
+            }
 
             // Apply grid snapping if enabled
             var transformGizmo = _owner.Gizmos.Get<TransformGizmo>();
@@ -207,7 +225,41 @@ namespace FlaxEditor.Viewport
                                        (int)(location.Z / snapValue) * snapValue);
             }
 
+            if (alignToGravity && TryGetGravityUp(location, gravityCenter, out gravityUp))
+                actor.Orientation = AlignUpToGravity(actor.Orientation, gravityUp);
+
             return location;
+        }
+
+        internal static bool TryGetGravityUp(Vector3 position, Vector3 center, out Float3 up)
+        {
+            var radial = position - center;
+            if (radial.LengthSquared < 0.000001f)
+            {
+                up = Float3.Zero;
+                return false;
+            }
+            radial.Normalize();
+            up = (Float3)radial;
+            return true;
+        }
+
+        internal static Quaternion AlignUpToGravity(Quaternion orientation, Float3 gravityUp)
+        {
+            var up = Float3.Up * orientation;
+            var right = Float3.Right * orientation;
+            var result = Quaternion.GetRotationFromTo(up, gravityUp, right) * orientation;
+            result.Normalize();
+            return result;
+        }
+
+        internal static Real GetBoundsBottomOffset(BoundingBox bounds, Float3 up)
+        {
+            var bottom = new Vector3(
+                up.X >= 0 ? bounds.Minimum.X : bounds.Maximum.X,
+                up.Y >= 0 ? bounds.Minimum.Y : bounds.Maximum.Y,
+                up.Z >= 0 ? bounds.Minimum.Z : bounds.Maximum.Z);
+            return -Vector3.Dot(bottom, new Vector3(up.X, up.Y, up.Z));
         }
 
         private void Spawn(Actor actor, ref Vector3 hitLocation, ref Vector3 hitNormal)

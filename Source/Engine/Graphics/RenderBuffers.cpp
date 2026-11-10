@@ -236,6 +236,13 @@ bool RenderBuffers::Init(int32 width, int32 height)
     auto desc = GPUTextureDescription::New2D(width, height, GPU_DEPTH_BUFFER_PIXEL_FORMAT, GPUTextureFlags::ShaderResource | GPUTextureFlags::DepthStencil);
     if (!EnumHasAllFlags(GPUDevice::Instance->GetFormatFeatures(desc.Format).Support, FormatSupport::DepthStencil | FormatSupport::Texture2D))
         desc.Format = desc.Format == PixelFormat::D24_UNorm_S8_UInt ? PixelFormat::D32_Float_S8X24_UInt : PixelFormat::D32_Float;
+#if REVERSE_Z
+    // Floating-point depth preserves reversed-Z precision near the far plane.
+    // Retain stencil and the existing fallback if this format is unsupported.
+    if (GPUDevice::Instance->GetRendererType() == RendererType::DirectX11 &&
+        EnumHasAllFlags(GPUDevice::Instance->GetFormatFeatures(PixelFormat::D32_Float_S8X24_UInt).Support, FormatSupport::DepthStencil | FormatSupport::Texture2D))
+        desc.Format = PixelFormat::D32_Float_S8X24_UInt;
+#endif
     if (GPUDevice::Instance->Limits.HasReadOnlyDepth)
         desc.Flags |= GPUTextureFlags::ReadOnlyDepthView;
     

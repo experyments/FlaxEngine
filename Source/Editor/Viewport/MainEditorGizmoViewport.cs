@@ -366,6 +366,21 @@ namespace FlaxEditor.Viewport
             _directionGizmo.LocalY = _directionGizmo.Size.Y * 0.5f + ViewportWidgetsContainer.WidgetsHeight + ViewportWidgetsContainer.WidgetsMargin * 2;
         }
 
+        internal bool TryGetGravityCenter(out Vector3 center)
+        {
+            center = _editor.Options.Options.Viewport.GravityCenter;
+            if (!UseSixDofCamera || !_editor.Options.Options.Viewport.AlignCameraToGravity)
+                return false;
+            if (_gravityCenterActor != Guid.Empty)
+            {
+                var actor = Object.TryFind<Actor>(ref _gravityCenterActor);
+                if (!actor)
+                    return false;
+                center = actor.Position;
+            }
+            return true;
+        }
+
         /// <inheritdoc />
         public override void Update(float deltaTime)
         {
@@ -396,16 +411,8 @@ namespace FlaxEditor.Viewport
                 ViewPosition = selectionBounds.Center + (-ViewDirection * (focusDistance + _lockedFocusOffset));
             }
 
-            if (UseSixDofCamera && _editor.Options.Options.Viewport.AlignCameraToGravity && !(ViewportCamera is FPSCamera camera && camera.IsAnimatingMove) && !(ViewportCamera is SixDofCamera sixDofCamera && sixDofCamera.IsRolling))
+            if (TryGetGravityCenter(out var center) && !(ViewportCamera is FPSCamera camera && camera.IsAnimatingMove) && !(ViewportCamera is SixDofCamera sixDofCamera && sixDofCamera.IsRolling))
             {
-                var center = _editor.Options.Options.Viewport.GravityCenter;
-                if (_gravityCenterActor != Guid.Empty)
-                {
-                    var actor = Object.TryFind<Actor>(ref _gravityCenterActor);
-                    if (!actor)
-                        return;
-                    center = actor.Position;
-                }
                 ViewOrientation = SixDofCamera.AlignToGravity(ViewOrientation, ViewPosition, center);
             }
         }
