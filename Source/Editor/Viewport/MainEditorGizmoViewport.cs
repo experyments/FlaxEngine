@@ -1,5 +1,6 @@
 // Copyright (c) Wojciech Figat. All rights reserved.
 
+using System;
 using System.Collections.Generic;
 using Object = FlaxEngine.Object;
 using FlaxEditor.Content;
@@ -8,6 +9,7 @@ using FlaxEditor.GUI.ContextMenu;
 using FlaxEditor.Options;
 using FlaxEditor.SceneGraph;
 using FlaxEditor.Scripting;
+using FlaxEditor.Viewport.Cameras;
 using FlaxEditor.Viewport.Modes;
 using FlaxEditor.Viewport.Widgets;
 using FlaxEditor.Windows;
@@ -29,6 +31,35 @@ namespace FlaxEditor.Viewport
         private readonly ContextMenuButton _toggleGameViewButton;
         private readonly ContextMenuButton _showDirectionGizmoButton;
         private SelectionOutline _customSelectionOutline;
+        private Quaternion _sixDofOrientation = Quaternion.Identity;
+        private Guid _gravityCenterActor;
+
+        internal bool UseSixDofCamera { get; private set; }
+
+        /// <inheritdoc />
+        public override Quaternion ViewOrientation
+        {
+            get => UseSixDofCamera ? _sixDofOrientation : base.ViewOrientation;
+            set
+            {
+                _sixDofOrientation = value;
+                _sixDofOrientation.Normalize();
+                base.ViewOrientation = value;
+            }
+        }
+
+        /// <inheritdoc />
+        protected override void CreateViewMatrix(Float3 position, out Matrix result)
+        {
+            if (!UseSixDofCamera)
+            {
+                base.CreateViewMatrix(position, out result);
+                return;
+            }
+            var target = position + ViewDirection;
+            var up = Float3.Up * ViewOrientation;
+            Matrix.LookAt(ref position, ref target, ref up, out result);
+        }
 
         /// <summary>
         /// The editor sprites rendering effect.
@@ -201,6 +232,9 @@ namespace FlaxEditor.Viewport
         : base(Object.New<SceneRenderTask>(), editor.Undo, editor.Scene.Root)
         {
             _editor = editor;
+            ViewportCamera = new SixDofCamera();
+            if (editor.ProjectCache.TryGetCustomData("PlanetCameraGravityActor", out string actorId))
+                Guid.TryParse(actorId, out _gravityCenterActor);
             var inputOptions = _editor.Options.Options.Input;
             DragHandlers = new ViewportDragHandlers(this, this, ValidateDragItem, ValidateDragActorType, ValidateDragScriptItem);
 
@@ -272,6 +306,20 @@ namespace FlaxEditor.Viewport
             // Create camera widget
             ViewWidgetButtonMenu.AddSeparator();
             ViewWidgetButtonMenu.AddButton("Create camera here", CreateCameraAtView);
+            ViewWidgetButtonMenu.AddButton("Use selected actor as gravity center", () =>
+            {
+                var selection = _editor.SceneEditing.Selection;
+                if (selection.Count == 1 && selection[0] is ActorNode actorNode)
+                {
+                    _gravityCenterActor = actorNode.Actor.ID;
+                    _editor.ProjectCache.SetCustomData("PlanetCameraGravityActor", _gravityCenterActor.ToString());
+                }
+            });
+            ViewWidgetButtonMenu.AddButton("Use gravity center coordinates", () =>
+            {
+                _gravityCenterActor = Guid.Empty;
+                _editor.ProjectCache.RemoveCustomData("PlanetCameraGravityActor");
+            });
 
             // Init gizmo modes
             {
@@ -305,6 +353,12 @@ namespace FlaxEditor.Viewport
 
         private void OnEditorOptionsChanged(EditorOptions options)
         {
+            if (UseSixDofCamera != options.Viewport.UseSixDofCamera)
+            {
+                var orientation = ViewOrientation;
+                UseSixDofCamera = options.Viewport.UseSixDofCamera;
+                ViewOrientation = orientation;
+            }
             _directionGizmo.Visible = options.Viewport.ShowDirectionGizmo;
             _showDirectionGizmoButton.Checked = _directionGizmo.Visible;
             _directionGizmo.Size = new Float2(DirectionGizmo.DefaultGizmoSize * options.Viewport.DirectionGizmoScale);
@@ -340,6 +394,19 @@ namespace FlaxEditor.Viewport
 
                 var focusDistance = Mathf.Max(selectionBounds.Radius * 2d, 100d);
                 ViewPosition = selectionBounds.Center + (-ViewDirection * (focusDistance + _lockedFocusOffset));
+            }
+
+            if (UseSixDofCamera && _editor.Options.Options.Viewport.AlignCameraToGravity && !(ViewportCamera is FPSCamera camera && camera.IsAnimatingMove) && !(ViewportCamera is SixDofCamera sixDofCamera && sixDofCamera.IsRolling))
+            {
+                var center = _editor.Options.Options.Viewport.GravityCenter;
+                if (_gravityCenterActor != Guid.Empty)
+                {
+                    var actor = Object.TryFind<Actor>(ref _gravityCenterActor);
+                    if (!actor)
+                        return;
+                    center = actor.Position;
+                }
+                ViewOrientation = SixDofCamera.AlignToGravity(ViewOrientation, ViewPosition, center);
             }
         }
 

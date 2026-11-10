@@ -39,7 +39,7 @@ namespace FlaxEditor.Viewport.Cameras
         public float AdditionalZoomFOV
         {
             get => _additionalFOV;
-            private set => _additionalFOV = Mathf.Clamp(value, 5 - Viewport.FieldOfView, 160f - Viewport.FieldOfView);
+            protected set => _additionalFOV = Mathf.Clamp(value, 5 - Viewport.FieldOfView, 160f - Viewport.FieldOfView);
         }
 
         /// <summary>

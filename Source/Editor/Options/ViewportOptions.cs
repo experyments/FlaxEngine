@@ -12,6 +12,26 @@ namespace FlaxEditor.Options
     public class ViewportOptions
     {
         /// <summary>
+        /// Enables free rotation in the main scene viewport.
+        /// </summary>
+        [DefaultValue(false)]
+        [EditorDisplay("Planet Camera"), EditorOrder(90), Tooltip("Enable six-degree-of-freedom flight in the main scene viewport. Hold right mouse, use Q/E to roll and the up/down arrows to move vertically. Bindings can be changed in Input options.")]
+        public bool UseSixDofCamera { get; set; }
+
+        /// <summary>
+        /// Aligns the camera to the gravity center while flying.
+        /// </summary>
+        [DefaultValue(false)]
+        [EditorDisplay("Planet Camera"), EditorOrder(91), Tooltip("Continuously level the main viewport camera relative to the gravity center. Requires six-degree-of-freedom flight.")]
+        public bool AlignCameraToGravity { get; set; }
+
+        /// <summary>
+        /// The world-space gravity center when no actor is selected as the center.
+        /// </summary>
+        [EditorDisplay("Planet Camera"), EditorOrder(92), Tooltip("World-space gravity center. Use the viewport View menu to follow a selected actor instead.")]
+        public Vector3 GravityCenter { get; set; } = Vector3.Zero;
+
+        /// <summary>
         /// Gets or sets the mouse movement sensitivity scale applied when using the viewport camera.
         /// </summary>
         [DefaultValue(1.0f), Limit(0.01f, 100.0f)]

@@ -323,7 +323,7 @@ namespace FlaxEditor.Viewport
         /// <summary>
         /// Gets or sets the view orientation.
         /// </summary>
-        public Quaternion ViewOrientation
+        public virtual Quaternion ViewOrientation
         {
             get => Quaternion.RotationYawPitchRoll(_yaw * Mathf.DegreesToRadians, _pitch * Mathf.DegreesToRadians, 0);
             set => EulerAngles = value.EulerAngles;
@@ -1795,11 +1795,12 @@ namespace FlaxEditor.Viewport
                 {
                     moveDelta += Vector3.Left;
                 }
-                if (win.GetKey(options.Input.Up.Key))
+                var sixDof = this is MainEditorGizmoViewport mainViewport && mainViewport.UseSixDofCamera;
+                if (win.GetKey(sixDof ? options.Input.SixDofCameraUp.Key : options.Input.Up.Key))
                 {
                     moveDelta += Vector3.Up;
                 }
-                if (win.GetKey(options.Input.Down.Key))
+                if (win.GetKey(sixDof ? options.Input.SixDofCameraDown.Key : options.Input.Down.Key))
                 {
                     moveDelta += Vector3.Down;
                 }

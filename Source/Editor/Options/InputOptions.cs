@@ -359,6 +359,22 @@ namespace FlaxEditor.Options
         [EditorDisplay("Viewport"), EditorOrder(1552)]
         public InputBinding ZoomOut = new InputBinding(KeyboardKeys.Z);
 
+        [DefaultValue(typeof(InputBinding), "ArrowUp")]
+        [EditorDisplay("Viewport", "6DOF Camera Up"), EditorOrder(1553)]
+        public InputBinding SixDofCameraUp = new InputBinding(KeyboardKeys.ArrowUp);
+
+        [DefaultValue(typeof(InputBinding), "ArrowDown")]
+        [EditorDisplay("Viewport", "6DOF Camera Down"), EditorOrder(1554)]
+        public InputBinding SixDofCameraDown = new InputBinding(KeyboardKeys.ArrowDown);
+
+        [DefaultValue(typeof(InputBinding), "Q")]
+        [EditorDisplay("Viewport", "6DOF Roll Camera Left"), EditorOrder(1555)]
+        public InputBinding SixDofCameraRollLeft = new InputBinding(KeyboardKeys.Q);
+
+        [DefaultValue(typeof(InputBinding), "E")]
+        [EditorDisplay("Viewport", "6DOF Roll Camera Right"), EditorOrder(1556)]
+        public InputBinding SixDofCameraRollRight = new InputBinding(KeyboardKeys.E);
+
         [DefaultValue(typeof(InputBinding), "None")]
         [EditorDisplay("Viewport", "Toggle Camera Rotation"), EditorOrder(1560)]
         public InputBinding CameraToggleRotation = new InputBinding(KeyboardKeys.None);
