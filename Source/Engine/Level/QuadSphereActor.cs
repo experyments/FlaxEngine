@@ -16,6 +16,9 @@ public partial class QuadSphereActor : Actor
     public Actor LodTarget;
     /// <summary>Material applied to terrain patches.</summary>
     public MaterialBase Material;
+    /// <summary>Repeats per base UV unit used to rebase patch UVs; zero disables rebasing.</summary>
+    [Tooltip("Optional UV precision improvement for wrapping textures. Set to the material's UV tiling multiplier (for example 128 for Texcoords * 128), or zero to disable. All uses of patch UVs must repeat at this period; clamp samplers and nonperiodic UV effects are not compatible. Rebuild terrain after changing.")]
+    public float UvRebaseRepeat = 0.0f;
     /// <summary>Base planet radius in local units.</summary>
     public double Radius = 100000.0;
 
@@ -28,10 +31,10 @@ public partial class QuadSphereActor : Actor
     /// <summary>Number of mesh subdivisions per side of a terrain patch.</summary>
     public int PatchResolution = 16;
     /// <summary>Number of base chunks per side of each cube face.</summary>
-    [Tooltip("Number of base chunks per side of each cube face (1-16). Rebuild terrain after changing. Each chunk has its own LOD tree and mesh resolution.")]
+    [Tooltip("Number of base chunks per side of each cube face. Rebuild terrain after changing. Each chunk has its own LOD tree and mesh resolution.")]
     public int ChunksPerPatch = 1;
     /// <summary>Maximum quadtree refinement level for terrain LOD.</summary>
-    [Limit(0, 7), Tooltip("Maximum quadtree refinement level (0-7). More levels add mesh detail near the LOD target, not new noise features.")]
+    [Limit(0, 10), Tooltip("Maximum quadtree refinement level (0-10). More levels add mesh detail near the LOD target, not new noise features.")]
     public int MaxLod = 5;
     /// <summary>Distance threshold for refinement, expressed as a multiple of chunk size.</summary>
     [Tooltip("Refine a chunk when the target is within this multiple of the chunk's approximate size from its surface center.")]
@@ -100,6 +103,7 @@ public partial class QuadSphereActor : Actor
     private int _noiseOctaves;
     private int _noiseSeed;
     private float _heightmapHeight;
+    private float _uvRebaseRepeat;
     private HashSet<(int Face, int Level, int X, int Y)> _desired;
     private List<(int Face, int Level, int X, int Y)> _pendingKeys;
     private int _pendingIndex;
@@ -110,7 +114,7 @@ public partial class QuadSphereActor : Actor
     private sealed class TerrainSnapshot
     {
         public double Radius;
-        public float SkirtDepth, NoiseHeight, NoiseFrequency, HeightmapHeight;
+        public float SkirtDepth, NoiseHeight, NoiseFrequency, HeightmapHeight, UvRebaseRepeat;
         public int Resolution, ChunksPerPatch, NoiseOctaves, NoiseSeed;
         public HeightImage Heightmap;
         public BrushData[] Brushes;
@@ -216,7 +220,7 @@ public partial class QuadSphereActor : Actor
             v = local.Y / az;
         }
 
-        for (int level = 0; level <= 7; level++)
+        for (int level = 0; level <= 10; level++)
         {
             int divisions = _chunksPerPatch << level;
             int x = Math.Clamp((int)((u + 1.0) * 0.5 * divisions), 0, divisions - 1);
@@ -273,20 +277,21 @@ public partial class QuadSphereActor : Actor
             Debug.LogError("Quad sphere radius must be positive, finite, and representable by patch meshes.");
             return;
         }
-        if (!float.IsFinite(SkirtDepth) || !float.IsFinite(NoiseHeight) || !float.IsFinite(NoiseFrequency) || !float.IsFinite(HeightmapHeight))
+        if (!float.IsFinite(SkirtDepth) || !float.IsFinite(NoiseHeight) || !float.IsFinite(NoiseFrequency) || !float.IsFinite(HeightmapHeight) || !float.IsFinite(UvRebaseRepeat) || UvRebaseRepeat < 0)
         {
-            Debug.LogError("Quad sphere terrain settings must be finite.");
+            Debug.LogError("Quad sphere terrain settings must be finite, and UV rebase repeat must be nonnegative.");
             return;
         }
         _radius = Radius;
         _resolution = Math.Clamp(PatchResolution, 2, 128);
-        _chunksPerPatch = Math.Clamp(ChunksPerPatch, 1, 16);
+        _chunksPerPatch = Math.Clamp(ChunksPerPatch, 1, 128);
         _skirtDepth = Math.Max(0, SkirtDepth);
         _noiseHeight = NoiseHeight;
         _noiseFrequency = Math.Max(0, NoiseFrequency);
         _noiseOctaves = Math.Clamp(NoiseOctaves, 0, 12);
         _noiseSeed = NoiseSeed;
         _heightmapHeight = HeightmapHeight;
+        _uvRebaseRepeat = UvRebaseRepeat;
         if (Heightmap != null && !TryReadImage(Heightmap, out _heightmap))
             return;
 
@@ -624,7 +629,7 @@ public partial class QuadSphereActor : Actor
         var desired = new HashSet<(int Face, int Level, int X, int Y)>();
         var snapshot = new TerrainSnapshot { Radius = _radius, Resolution = _resolution, ChunksPerPatch = _chunksPerPatch, SkirtDepth = _skirtDepth,
             NoiseHeight = _noiseHeight, NoiseFrequency = _noiseFrequency, NoiseOctaves = _noiseOctaves,
-            NoiseSeed = _noiseSeed, HeightmapHeight = _heightmapHeight, Heightmap = _heightmap,
+            NoiseSeed = _noiseSeed, HeightmapHeight = _heightmapHeight, Heightmap = _heightmap, UvRebaseRepeat = _uvRebaseRepeat,
             Brushes = _brushes, PlanetTransform = _brushTransform };
         bool hasTarget = TryGetLodTargetPosition(out var targetPosition);
         Vector3 target = hasTarget ? Transform.WorldToLocal(targetPosition) : Vector3.Zero;
@@ -732,7 +737,7 @@ public partial class QuadSphereActor : Actor
 
     private void SelectPatches(HashSet<(int Face, int Level, int X, int Y)> result, int face, int level, int x, int y, Vector3 target, bool hasTarget, TerrainSnapshot settings)
     {
-        if (hasTarget && level < Math.Clamp(MaxLod, 0, 7))
+        if (hasTarget && level < Math.Clamp(MaxLod, 0, 10))
         {
             int divisions = settings.ChunksPerPatch << level;
             double u = -1.0 + 2.0 * (x + 0.5) / divisions;
@@ -756,10 +761,15 @@ public partial class QuadSphereActor : Actor
         int n = settings.Resolution;
         int patchesPerChunk = 1 << key.Level;
         int divisions = settings.ChunksPerPatch * patchesPerChunk;
-        double uvDenominator = (double)patchesPerChunk * n;
         double step = 2.0 / divisions;
         double u0 = -1.0 + key.X * step;
         double v0 = -1.0 + key.Y * step;
+        double uvStartX = (key.X % patchesPerChunk) * n / (double)patchesPerChunk;
+        double uvStartY = (key.Y % patchesPerChunk) * n / (double)patchesPerChunk;
+        // Subtract only whole texture periods, once per patch, before conversion
+        // to float. This keeps interpolation and its derivatives continuous.
+        double uvOffsetX = settings.UvRebaseRepeat > 0 ? Math.Floor(uvStartX * settings.UvRebaseRepeat) / settings.UvRebaseRepeat : 0.0;
+        double uvOffsetY = settings.UvRebaseRepeat > 0 ? Math.Floor(uvStartY * settings.UvRebaseRepeat) / settings.UvRebaseRepeat : 0.0;
         Double3 origin = Direction(key.Face, u0 + step * 0.5, v0 + step * 0.5) * settings.Radius;
         Double3 uAxis = key.Face switch
         {
@@ -787,10 +797,9 @@ public partial class QuadSphereActor : Actor
                 vertices.Add(Surface(direction, settings) - origin);
                 normals.Add(normal);
                 tangents.Add(SurfaceTangent(direction, normal, uAxis));
-                // Every LOD shares its base chunk's UV square. Derive shared
-                // coordinates from the same rational grid before rounding to float.
-                uvs.Add(new Float2((float)(((key.X % patchesPerChunk) * n + x) / uvDenominator),
-                    (float)(((key.Y % patchesPerChunk) * n + y) / uvDenominator)));
+                // Every LOD shares the base chunk grid modulo the selected repeat period.
+                uvs.Add(new Float2((float)(uvStartX + x / (double)patchesPerChunk - uvOffsetX),
+                    (float)(uvStartY + y / (double)patchesPerChunk - uvOffsetY)));
             }
         }
         for (int y = 0; y < n; y++)
