@@ -591,6 +591,7 @@ RenderList::RenderList(const SpawnParams& params)
     , Decals(64)
     , Sky(nullptr)
     , AtmosphericFog(nullptr)
+    , PlanetClouds(nullptr)
     , Blendable(32)
     , ObjectBuffer(0, PixelFormat::R32G32B32A32_Float, false, TEXT("Object Buffer"))
     , TempObjectBuffer(0, PixelFormat::R32G32B32A32_Float, false, TEXT("Object Buffer"))
@@ -622,6 +623,7 @@ void RenderList::Clear()
     VolumetricFogParticles.Clear();
     Sky = nullptr;
     AtmosphericFog = nullptr;
+    PlanetClouds = nullptr;
     Fog = RenderFogData();
     PostFx.Clear();
     Settings = PostProcessSettings();

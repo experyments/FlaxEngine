@@ -2,6 +2,7 @@
 
 #include "ExponentialHeightFog.h"
 #include "DirectionalLight.h"
+#include "Sky.h"
 #include "Engine/Core/Math/Color.h"
 #include "Engine/Content/Content.h"
 #include "Engine/Graphics/GPUContext.h"
@@ -9,6 +10,7 @@
 #include "Engine/Serialization/Serialization.h"
 #include "Engine/Graphics/RenderView.h"
 #include "Engine/Graphics/RenderContext.h"
+#include "Engine/Graphics/RenderTask.h"
 #include "Engine/Graphics/RenderBuffers.h"
 #include "Engine/Graphics/Shaders/GPUConstantBuffer.h"
 #include "Engine/Renderer/GBufferPass.h"
@@ -141,6 +143,8 @@ void ExponentialHeightFog::GetVolumetricFogOptions(const RenderView& view, Volum
     result.ExtinctionScale = VolumetricFogExtinctionScale;
     result.Distance = VolumetricFogDistance;
     result.FogParameters = Float4(density, height, heightFalloff, 0.0f);
+    result.RadialCameraPosition = Float4::Zero;
+    result.RadialParameters = Float4::Zero;
 }
 
 void ExponentialHeightFog::GetExponentialHeightFogData(const RenderView& view, ShaderExponentialHeightFogData& result) const
@@ -176,6 +180,46 @@ void ExponentialHeightFog::GetExponentialHeightFogData(const RenderView& view, S
     }
     result.ApplyDirectionalInscattering = useDirectionalLightInscattering ? 1.0f : 0.0f;
     result.VolumetricFogMaxDistance = VolumetricFogDistance;
+    result.RadialCameraPosition = Float4::Zero;
+    result.RadialParameters = Float4::Zero;
+}
+
+RadialExponentialHeightFog::RadialExponentialHeightFog(const SpawnParams& params)
+    : ExponentialHeightFog(params)
+{
+}
+
+void RadialExponentialHeightFog::Serialize(SerializeStream& stream, const void* otherObj)
+{
+    ExponentialHeightFog::Serialize(stream, otherObj);
+    SERIALIZE_GET_OTHER_OBJ(RadialExponentialHeightFog);
+    SERIALIZE(Radius);
+    SERIALIZE(AtmosphereColorInfluence);
+}
+
+void RadialExponentialHeightFog::Deserialize(DeserializeStream& stream, ISerializeModifier* modifier)
+{
+    ExponentialHeightFog::Deserialize(stream, modifier);
+    DESERIALIZE(Radius);
+    DESERIALIZE(AtmosphereColorInfluence);
+}
+
+void RadialExponentialHeightFog::GetVolumetricFogOptions(const RenderView& view, VolumetricFogOptions& result) const
+{
+    ExponentialHeightFog::GetVolumetricFogOptions(view, result);
+    const Vector3 cameraFromCenter = view.Origin + Vector3(view.Position) - GetPosition();
+    const float radius = Math::Max(Radius, 1.0f);
+    result.RadialCameraPosition = Float4((Float3)cameraFromCenter, (float)(cameraFromCenter.Length() - radius));
+    result.RadialParameters = Float4(radius, 1.0f, 0.0f, 0.0f);
+}
+
+void RadialExponentialHeightFog::GetExponentialHeightFogData(const RenderView& view, ShaderExponentialHeightFogData& result) const
+{
+    ExponentialHeightFog::GetExponentialHeightFogData(view, result);
+    const Vector3 cameraFromCenter = view.Origin + Vector3(view.Position) - GetPosition();
+    const float radius = Math::Max(Radius, 1.0f);
+    result.RadialCameraPosition = Float4((Float3)cameraFromCenter, (float)(cameraFromCenter.Length() - radius));
+    result.RadialParameters = Float4(radius, 1.0f, Math::Saturate(AtmosphereColorInfluence), 0.0f);
 }
 
 GPU_CB_STRUCT(Data{
@@ -191,10 +235,23 @@ void ExponentialHeightFog::DrawFog(GPUContext* context, RenderContext& renderCon
     auto volumetricFogTexture = renderContext.List->Fog.VolumetricFogTexture;
     bool useVolumetricFog = volumetricFogTexture != nullptr;
 
+    // Reuse the atmosphere-only capture shared with planetary clouds. Capture can change
+    // the viewport and GPU bindings, so do it before setting up the fog pass.
+    GPUTextureView* atmosphereSky = nullptr;
+    const auto& fogData = renderContext.List->Fog.ExponentialHeightFogData;
+    if (fogData.RadialParameters.Y > 0.0f && fogData.RadialParameters.Z > 0.0f &&
+        dynamic_cast<PlanetSkyAtmosphere*>(renderContext.List->Sky))
+    {
+        atmosphereSky = GBufferPass::Instance()->RenderSkybox(renderContext, context, true);
+        context->SetViewportAndScissors(renderContext.Task ? renderContext.Task->GetViewport() : renderContext.Buffers->GetViewport());
+    }
+
     // Setup shader inputs
     Data data;
     GBufferPass::SetInputs(renderContext.View, data.GBuffer);
     data.ExponentialHeightFog = renderContext.List->Fog.ExponentialHeightFogData;
+    if (!atmosphereSky)
+        data.ExponentialHeightFog.RadialParameters.Z = 0.0f;
     data.VolumetricFog = renderContext.List->Fog.VolumetricFogData;
     data.TemporalAAJitter = renderContext.View.TemporalAAJitter;
     auto cb = _shader->GPU->GetCB(0);
@@ -203,6 +260,7 @@ void ExponentialHeightFog::DrawFog(GPUContext* context, RenderContext& renderCon
     context->BindCB(0, cb);
     context->BindSR(0, renderContext.Buffers->DepthBuffer);
     context->BindSR(1, volumetricFogTexture);
+    context->BindSR(2, atmosphereSky);
 
     // TODO: instead of rendering fullscreen triangle, draw quad transformed at the fog start distance (also it could use early depth discard)
     // TODO: or use DepthBounds to limit the fog rendering to the distance range

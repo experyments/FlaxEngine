@@ -17,6 +17,7 @@
 #include "Engine/Content/Content.h"
 #include "Engine/Engine/Engine.h"
 #include "Engine/Engine/Units.h"
+#include "Engine/Level/Actors/Sky.h"
 
 // Must match shader source
 int32 VolumetricFogGridInjectionGroupSize = 4;
@@ -52,6 +53,8 @@ GPU_CB_STRUCT(Data {
     float InverseSquaredLightDistanceBiasScale;
 
     Float4 FogParameters;
+    Float4 RadialCameraPosition;
+    Float4 RadialParameters;
     Float4 GridSliceParameters;
 
     Matrix PrevWorldToClip;
@@ -61,6 +64,11 @@ GPU_CB_STRUCT(Data {
     ShaderLightData DirectionalLight;
     SkyLightData SkyLight;
     DynamicDiffuseGlobalIlluminationPass::ConstantsData DDGI;
+
+    Float4 CloudCameraFromCenter;
+    Float4 CloudGeometry;
+    Float4 CloudSettings;
+    Float4 CloudAlbedo;
     });
 
 GPU_CB_STRUCT(PerLight {
@@ -291,7 +299,29 @@ bool VolumetricFogPass::Init(FrameCache& cache, RenderContext& renderContext, GP
     cache.Data.GridSizeIntZ = (uint32)cache.GridSize.Z;
     cache.Data.HistoryWeight = cache.HistoryWeight;
     cache.Data.FogParameters = options.FogParameters;
+    cache.Data.RadialCameraPosition = options.RadialCameraPosition;
+    cache.Data.RadialParameters = options.RadialParameters;
     cache.Data.GridSliceParameters = GetGridSliceParameters(fogStart, fogData.MaxDistance, cache.GridSizeZ);
+    cache.Data.CloudCameraFromCenter = Float4(0, 0, 0, 0);
+    cache.Data.CloudGeometry = Float4(0, 0, 0, 0);
+    cache.Data.CloudSettings = Float4(0, 0, 0, 0);
+    cache.Data.CloudAlbedo = Float4(0, 0, 0, 0);
+    const auto clouds = dynamic_cast<PlanetVolumetricClouds*>(renderContext.List->PlanetClouds);
+    if (clouds && clouds->Coverage > 0.0f && clouds->Density > 0.0f && clouds->VolumetricFogContribution > 0.0f)
+    {
+        const auto sky = dynamic_cast<PlanetSkyAtmosphere*>(renderContext.List->Sky);
+        const Vector3 center = sky ? sky->GetPosition() : clouds->GetPosition();
+        const float radius = Math::Max(sky ? sky->PlanetRadius : clouds->PlanetRadius, 1.0f);
+        const Vector3 camera = renderContext.View.Origin + Vector3(renderContext.View.Position) - center;
+        const float altitude = (float)((camera.Length() - radius) * 0.00001);
+        if (altitude >= 0.0f)
+        {
+            cache.Data.CloudCameraFromCenter = Float4((Float3)(camera * 0.00001), altitude);
+            cache.Data.CloudGeometry = Float4(radius * 0.00001f, Math::Max(clouds->CloudBaseHeight, 0.0f) * 0.00001f, Math::Max(clouds->CloudThickness, 1.0f) * 0.00001f, Math::Max(clouds->CloudScale, 1.0f) * 0.00001f);
+            cache.Data.CloudSettings = Float4(Math::Saturate(clouds->Coverage), Math::Max(clouds->Density, 0.0f), Math::Max(clouds->VolumetricFogContribution, 0.0f), 0.0f);
+            cache.Data.CloudAlbedo = Float4(clouds->CloudColor.ToFloat3() * clouds->CloudColor.A, 0.0f);
+        }
+    }
     /*static bool log = true;
     if (log)
     {

@@ -164,3 +164,31 @@ protected:
     void OnDisable() override;
     void OnTransformChanged() override;
 };
+
+/// <summary>
+/// Exponential fog whose height is measured from a spherical planet surface centered on this actor.
+/// </summary>
+API_CLASS(Attributes = "ActorContextMenu(\"New/Visuals/Lighting & PostFX/Radial Exponential Height Fog\"), ActorToolbox(\"Visuals\")")
+class FLAXENGINE_API RadialExponentialHeightFog : public ExponentialHeightFog
+{
+    DECLARE_SCENE_OBJECT(RadialExponentialHeightFog);
+public:
+    /// <summary>
+    /// The planet surface radius in world units. The default is 600 kilometers.
+    /// </summary>
+    API_FIELD(Attributes = "EditorOrder(0), DefaultValue(60000000.0f), Limit(1), EditorDisplay(\"Radial Fog\")")
+    float Radius = 60000000.0f;
+
+    /// <summary>
+    /// Blend the fog color toward the captured planet sky in the viewing direction.
+    /// Also tints volumetric fog lighting. Zero preserves the original fog colors.
+    /// Requires an active Planet Sky Atmosphere and the Sky view flag.
+    /// </summary>
+    API_FIELD(Attributes = "EditorOrder(10), DefaultValue(0.0f), Limit(0, 1, 0.01f), EditorDisplay(\"Radial Fog\")")
+    float AtmosphereColorInfluence = 0.0f;
+
+    void Serialize(SerializeStream& stream, const void* otherObj) override;
+    void Deserialize(DeserializeStream& stream, ISerializeModifier* modifier) override;
+    void GetVolumetricFogOptions(const RenderView& view, VolumetricFogOptions& result) const override;
+    void GetExponentialHeightFogData(const RenderView& view, ShaderExponentialHeightFogData& result) const override;
+};

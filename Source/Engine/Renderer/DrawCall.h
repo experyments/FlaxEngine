@@ -31,7 +31,7 @@ class GPUTexture;
 /// <summary>
 /// Interface for objects that can render custom sky
 /// </summary>
-class ISkyRenderer
+class FLAXENGINE_API ISkyRenderer
 {
 public:
 
@@ -41,6 +41,11 @@ public:
     virtual bool IsDynamicSky() const = 0;
 
     virtual float GetIndirectLightingIntensity() const = 0;
+
+    /// <summary>
+    /// Prepare any resources needed to render the sky before its output target is bound.
+    /// </summary>
+    virtual void PrepareSky(GPUContext* context, RenderContext& renderContext) {}
 
     /// <summary>
     /// Apply sky material/shader state to the GPU pipeline with custom parameters set (render to GBuffer).
@@ -63,6 +68,8 @@ struct VolumetricFogOptions
     float ExtinctionScale;
     float Distance;
     Float4 FogParameters;
+    Float4 RadialCameraPosition;
+    Float4 RadialParameters;
 
     bool UseVolumetricFog() const
     {

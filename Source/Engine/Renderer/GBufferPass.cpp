@@ -240,6 +240,9 @@ void GBufferPass::Fill(RenderContext& renderContext, GPUTexture* lightBuffer)
     if (renderContext.List->Sky && _skyModel && _skyModel->CanBeRendered() && EnumHasAnyFlags(renderContext.View.Flags, ViewFlags::Sky))
     {
         PROFILE_GPU_CPU_NAMED("Sky");
+        context->ResetRenderTarget();
+        renderContext.List->Sky->PrepareSky(context, renderContext);
+        context->SetViewportAndScissors(renderContext.Buffers->GetViewport());
         context->SetRenderTarget(*renderContext.Buffers->DepthBuffer, ToSpan(targetBuffers, ARRAY_COUNT(targetBuffers)));
         DrawSky(renderContext, context);
     }
@@ -320,13 +323,13 @@ public:
     }
 };
 
-GPUTextureView* GBufferPass::RenderSkybox(RenderContext& renderContext, GPUContext* context)
+GPUTextureView* GBufferPass::RenderSkybox(RenderContext& renderContext, GPUContext* context, bool atmosphereOnly)
 {
     GPUTextureView* result = nullptr;
     if (renderContext.List->Sky && _skyModel && _skyModel->CanBeRendered() && EnumHasAnyFlags(renderContext.View.Flags, ViewFlags::Sky))
     {
         // Initialize skybox texture
-        auto& skyboxData = *renderContext.Buffers->GetCustomBuffer<SkyboxCustomBuffer>(TEXT("Skybox"));
+        auto& skyboxData = *renderContext.Buffers->GetCustomBuffer<SkyboxCustomBuffer>(atmosphereOnly ? TEXT("Skybox.AtmosphereOnly") : TEXT("Skybox"));
         skyboxData.LastFrameUsed = Engine::FrameCount;
         bool dirty = false;
         const int32 resolution = 16;
@@ -349,7 +352,11 @@ GPUTextureView* GBufferPass::RenderSkybox(RenderContext& renderContext, GPUConte
         {
             PROFILE_GPU_CPU("Skybox");
             skyboxData.LastCaptureFrame = Engine::FrameCount;
+            context->ResetRenderTarget();
             const RenderView originalView = renderContext.View;
+            if (atmosphereOnly)
+                renderContext.View.Flags &= ~ViewFlags::SpecularLight;
+            renderContext.List->Sky->PrepareSky(context, renderContext);
             renderContext.View.Pass = DrawPass::GBuffer;
             renderContext.View.SetUpCube(10.0f, 10000.0f, originalView.Position);
             for (int32 faceIndex = 0; faceIndex < 6; faceIndex++)
@@ -357,7 +364,7 @@ GPUTextureView* GBufferPass::RenderSkybox(RenderContext& renderContext, GPUConte
                 renderContext.View.SetFace(faceIndex);
                 context->SetRenderTarget(skyboxData.Skybox->View(faceIndex));
                 context->SetViewportAndScissors(resolution, resolution);
-                DrawSky(renderContext, context);
+                DrawSky(renderContext, context, atmosphereOnly);
             }
             renderContext.View = originalView;
             context->ResetRenderTarget();
@@ -452,7 +459,7 @@ void GBufferPass::SetInputs(const RenderView& view, ShaderGBufferData& gBuffer)
     Matrix::Transpose(view.IP, gBuffer.InvProjectionMatrix);
 }
 
-void GBufferPass::DrawSky(RenderContext& renderContext, GPUContext* context)
+void GBufferPass::DrawSky(RenderContext& renderContext, GPUContext* context, bool atmosphereOnly)
 {
     // Cache data
     auto model = _skyModel.Get();
@@ -474,7 +481,11 @@ void GBufferPass::DrawSky(RenderContext& renderContext, GPUContext* context)
     m1 *= m2;
 
     // Draw sky
-    renderContext.List->Sky->ApplySky(context, renderContext, m1);
+    const auto planetSky = atmosphereOnly ? dynamic_cast<PlanetSkyAtmosphere*>(renderContext.List->Sky) : nullptr;
+    if (planetSky)
+        planetSky->ApplyAtmosphereOnly(context, renderContext, m1);
+    else
+        renderContext.List->Sky->ApplySky(context, renderContext, m1);
     model->Render(context);
 }
 

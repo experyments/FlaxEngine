@@ -4,6 +4,8 @@
 
 #include "Light.h"
 
+struct RenderDirectionalLightData;
+
 /// <summary>
 /// Directional light emits light from direction in space.
 /// </summary>
@@ -70,4 +72,32 @@ public:
 protected:
     // [LightWithShadow]
     void OnTransformChanged() override;
+    virtual void SetupDirectionalLightData(RenderDirectionalLightData& data) const;
+};
+
+/// <summary>
+/// Directional light with additional far shadow cascades.
+/// </summary>
+API_CLASS(Attributes="ActorContextMenu(\"New/Lights/Far Directional Light\"), ActorToolbox(\"Lights\")")
+class FLAXENGINE_API FarDirectionalLight : public DirectionalLight
+{
+    DECLARE_SCENE_OBJECT(FarDirectionalLight);
+public:
+    /// <summary>
+    /// Number of additional cascades beyond the regular shadow distance. Set to zero to disable far shadows. Far cascades update every frame.
+    /// </summary>
+    API_FIELD(Attributes="EditorOrder(110), EditorDisplay(\"Far Shadow\"), Limit(0, 4)")
+    int32 FarCascadeCount = 2;
+
+    /// <summary>
+    /// Maximum distance from the view covered by far shadows, in world units. The camera far plane also limits this distance.
+    /// </summary>
+    API_FIELD(Attributes="EditorOrder(111), EditorDisplay(\"Far Shadow\"), Limit(0, 100000000), ValueCategory(Utils.ValueCategory.Distance)")
+    float FarShadowsDistance = 10000000.0f;
+
+    void Serialize(SerializeStream& stream, const void* otherObj) override;
+    void Deserialize(DeserializeStream& stream, ISerializeModifier* modifier) override;
+
+protected:
+    void SetupDirectionalLightData(RenderDirectionalLightData& data) const override;
 };

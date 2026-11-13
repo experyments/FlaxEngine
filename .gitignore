@@ -159,3 +159,4 @@ obj/
 .idea/
 *.code-workspace
 omnisharp.json
+.github/copilot-instructions.md

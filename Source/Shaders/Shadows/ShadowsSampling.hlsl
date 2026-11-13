@@ -392,7 +392,7 @@ ShadowSample SampleDirectionalLightShadowCascade(LightData light, Buffer<float4>
 #endif
 
     // Increase the sharpness for higher cascades to match the filter radius
-    const float SharpnessScale[MaxNumCascades] = { 1.0f, 1.5f, 3.0f, 3.5f };
+    const float SharpnessScale[MaxNumCascades] = { 1.0f, 1.5f, 3.0f, 3.5f, 3.5f, 3.5f, 3.5f, 3.5f };
     shadow.Sharpness *= SharpnessScale[cascadeIndex];
 
     result.TransmissionShadow = 1;
@@ -440,7 +440,7 @@ ShadowSample SampleDirectionalLightShadow(LightData light, Buffer<float4> shadow
 
     // Create a blend factor which is one before and at the fade plane
     float viewDepth = gBuffer.ViewPos.z;
-    float fade = saturate((viewDepth - shadow.CascadeSplits[shadow.TilesCount - 1] + shadow.FadeDistance) / shadow.FadeDistance);
+    float fade = saturate((viewDepth - GetCascadeSplit(shadow, shadow.TilesCount - 1) + shadow.FadeDistance) / shadow.FadeDistance);
     BRANCH
     if (fade >= 1.0)
         return result;
@@ -449,16 +449,16 @@ ShadowSample SampleDirectionalLightShadow(LightData light, Buffer<float4> shadow
     uint cascadeIndex = 0;
     for (uint i = 0; i < shadow.TilesCount - 1; i++)
     {
-        if (viewDepth > shadow.CascadeSplits[i])
+        if (viewDepth > GetCascadeSplit(shadow, i))
             cascadeIndex = i + 1;
     }
 #if SHADOWS_CSM_DITHERING || SHADOWS_CSM_BLENDING
-	float nextSplit = shadow.CascadeSplits[cascadeIndex];
-	float splitSize = cascadeIndex == 0 ? nextSplit : nextSplit - shadow.CascadeSplits[cascadeIndex - 1];
+    float nextSplit = GetCascadeSplit(shadow, cascadeIndex);
+    float splitSize = cascadeIndex == 0 ? nextSplit : nextSplit - GetCascadeSplit(shadow, cascadeIndex - 1);
 	float splitDist = (nextSplit - viewDepth) / splitSize;
 #endif
 #if SHADOWS_CSM_DITHERING && !SHADOWS_CSM_BLENDING
-    if (splitDist <= shadow.CascadeBlendSize && cascadeIndex != shadow.TilesCount - 1)
+    if (shadow.CascadeBlendSize > 0.0f && splitDist <= shadow.CascadeBlendSize && cascadeIndex != shadow.TilesCount - 1)
     {
         // Dither with the next cascade but with screen-space dithering (gets cleaned out by TAA)
         float lerpAmount = 1 - splitDist / shadow.CascadeBlendSize;
@@ -476,7 +476,7 @@ ShadowSample SampleDirectionalLightShadow(LightData light, Buffer<float4> shadow
     result = SampleDirectionalLightShadowCascade(light, shadowsBuffer, shadowMap, gBuffer, shadow, samplePosition, cascadeIndex);
 
 #if SHADOWS_CSM_BLENDING
-    if (splitDist <= shadow.CascadeBlendSize && cascadeIndex != shadow.TilesCount - 1)
+    if (shadow.CascadeBlendSize > 0.0f && splitDist <= shadow.CascadeBlendSize && cascadeIndex != shadow.TilesCount - 1)
     {
 	    // Sample the next cascade, and blend between the two results to smooth the transition
         ShadowSample nextResult = SampleDirectionalLightShadowCascade(light, shadowsBuffer, shadowMap, gBuffer, shadow, samplePosition, cascadeIndex + 1);

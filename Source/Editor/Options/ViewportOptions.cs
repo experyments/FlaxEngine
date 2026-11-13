@@ -83,7 +83,7 @@ namespace FlaxEditor.Options
         /// <summary>
         /// Gets or sets the default maximum camera movement speed.
         /// </summary>
-        [DefaultValue(32.0f), Limit(16.0f, 1000.0f)]
+        [DefaultValue(32.0f), Limit(16.0f, 10000.0f)]
         [EditorDisplay("Defaults"), EditorOrder(122), Tooltip("The default maximum movement speed for the viewport camera.")]
         public float MaxMovementSpeed { get; set; } = 32f;
 

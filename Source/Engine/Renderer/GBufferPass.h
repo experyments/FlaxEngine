@@ -53,8 +53,9 @@ public:
     /// </summary>
     /// <param name="renderContext">The rendering context.</param>
     /// <param name="context">The GPU context.</param>
+    /// <param name="atmosphereOnly">For a planet sky, omit the sun disk and space background.</param>
     /// <returns>Rendered cubemap or null if not ready or failed.</returns>
-    GPUTextureView* RenderSkybox(RenderContext& renderContext, GPUContext* context);
+    GPUTextureView* RenderSkybox(RenderContext& renderContext, GPUContext* context, bool atmosphereOnly = false);
 
 #if GPU_ENABLE_DEVELOPMENT
     // Temporary cache for faster debug previews drawing (used only during frame rendering).
@@ -85,7 +86,7 @@ public:
 
 private:
 
-    void DrawSky(RenderContext& renderContext, GPUContext* context);
+    void DrawSky(RenderContext& renderContext, GPUContext* context, bool atmosphereOnly = false);
     void DrawDecals(RenderContext& renderContext, GPUTextureView* lightBuffer);
 
 #if COMPILE_WITH_DEV_ENV

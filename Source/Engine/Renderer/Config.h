@@ -42,7 +42,9 @@ GPU_CB_STRUCT(ShaderExponentialHeightFogData {
     float VolumetricFogMaxDistance;
     float DirectionalInscatteringStartDistance;
     float StartDistance;
-    
+
+    Float4 RadialCameraPosition;
+    Float4 RadialParameters;
     });
 
 /// <summary>

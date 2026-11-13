@@ -40,7 +40,10 @@ namespace FlaxEditor.SceneGraph
             CustomNodesTypes.Add(typeof(SpotLight), typeof(SpotLightNode));
             CustomNodesTypes.Add(typeof(Skybox), typeof(SkyboxNode));
             CustomNodesTypes.Add(typeof(Sky), typeof(SkyNode));
+            CustomNodesTypes.Add(typeof(PlanetSkyAtmosphere), typeof(SkyNode));
+            CustomNodesTypes.Add(typeof(PlanetVolumetricClouds), typeof(SkyNode));
             CustomNodesTypes.Add(typeof(ExponentialHeightFog), typeof(ExponentialHeightFogNode));
+            CustomNodesTypes.Add(typeof(RadialExponentialHeightFog), typeof(ExponentialHeightFogNode));
             CustomNodesTypes.Add(typeof(SkyLight), typeof(SkyLightNode));
             CustomNodesTypes.Add(typeof(PostFxVolume), typeof(PostFxVolumeNode));
             CustomNodesTypes.Add(typeof(StaticModel), typeof(StaticModelNode));

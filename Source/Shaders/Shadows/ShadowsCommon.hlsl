@@ -6,7 +6,7 @@
 #include "./Flax/Common.hlsl"
 
 // Maximum number of directional light shadows cascaded splits
-#define MaxNumCascades 4
+#define MaxNumCascades 8
 
 // Set default macros if not provided
 #ifndef SHADOWS_QUALITY
@@ -24,6 +24,7 @@ struct ShadowData
     float CascadeBlendSize;
     uint TilesCount;
     float4 CascadeSplits;
+    float4 FarCascadeSplits;
 };
 
 // Shadow projection tile data for the light
@@ -49,14 +50,22 @@ ShadowData LoadShadowsBuffer(Buffer<float4> shadowsBuffer, uint shadowsBufferAdd
     shadow.NormalOffsetScale = vector0.z;
     shadow.Bias = vector0.w;
     shadow.CascadeSplits = vector1;
+    shadow.FarCascadeSplits = shadowsBuffer.Load(shadowsBufferAddress + 2);
     return shadow;
+}
+
+float GetCascadeSplit(ShadowData shadow, uint cascadeIndex)
+{
+    if (cascadeIndex < 4)
+        return shadow.CascadeSplits[cascadeIndex];
+    return shadow.FarCascadeSplits[cascadeIndex - 4];
 }
 
 // Loads the shadow tile data of the light in the shadow buffer
 ShadowTileData LoadShadowsBufferTile(Buffer<float4> shadowsBuffer, uint shadowsBufferAddress, uint tileIndex)
 {
     // This must match C++
-    shadowsBufferAddress += tileIndex * 5 + 2;
+    shadowsBufferAddress += tileIndex * 5 + 3;
     ShadowTileData tile;
     tile.ShadowToAtlas = shadowsBuffer.Load(shadowsBufferAddress + 0);
     tile.WorldToShadow[0] = shadowsBuffer.Load(shadowsBufferAddress + 1);

@@ -637,7 +637,7 @@ namespace FlaxEditor.Viewport
                 };
                 var maxCamSpeedButton = cameraCM.AddButton("Max Cam Speed");
                 maxCamSpeedButton.CloseMenuOnClick = false;
-                var maxCamSpeedValue = new FloatValueBox(_maxMovementSpeed, xLocationForExtras, 2, 70.0f, _minMovementSpeed, 1000.0f, 0.5f)
+                var maxCamSpeedValue = new FloatValueBox(_maxMovementSpeed, xLocationForExtras, 2, 70.0f, _minMovementSpeed, 10000.0f, 0.5f)
                 {
                     Parent = maxCamSpeedButton
                 };
@@ -1150,7 +1150,7 @@ namespace FlaxEditor.Viewport
 
         private void OnMaxMovementSpeedChanged(FloatValueBox control)
         {
-            var value = Mathf.Clamp(control.Value, _minMovementSpeed, 1000.0f);
+            var value = Mathf.Clamp(control.Value, _minMovementSpeed, 10000.0f);
             _maxMovementSpeed = value;
 
             if (_movementSpeed > value)

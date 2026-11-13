@@ -80,6 +80,8 @@ struct RenderDirectionalLightData : RenderLightData
     int32 CascadeCount;
     float CascadeBlendSize;
     float SourceAngle;
+    int32 FarCascadeCount;
+    float FarShadowsDistance;
 
     RenderDirectionalLightData()
     {
@@ -442,6 +444,9 @@ public:
     /// Atmospheric fog renderer proxy to use (only one per frame)
     /// </summary>
     IAtmosphericFogRenderer* AtmosphericFog;
+
+    /// <summary>Planetary cloud renderer to use for this frame.</summary>
+    IAtmosphericFogRenderer* PlanetClouds;
 
     /// <summary>
     /// Fog rendering data.

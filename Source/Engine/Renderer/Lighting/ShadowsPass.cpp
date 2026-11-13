@@ -23,7 +23,7 @@
 #define SHADOWS_USE_CACHE 1
 #define SHADOWS_POSITION_ERROR METERS_TO_UNITS(0.1f)
 #define SHADOWS_ROTATION_ERROR 0.9999f
-#define SHADOWS_MAX_TILES 6
+#define SHADOWS_MAX_TILES 8
 #define SHADOWS_MIN_RESOLUTION 32
 #define SHADOWS_STATIC_ATLAS_MAX_CAPACITY_TO_DEFRAG 0.7f
 #define SHADOWS_STATIC_ATLAS_SCALE 2
@@ -131,10 +131,11 @@ struct ShadowAtlasLightCache
     Float3 Direction;
     float Distance;
     Float4 CascadeSplits;
+    Float4 FarCascadeSplits;
     Float3 ViewDirection;
     int32 ShadowsResolution;
 
-    void Set(const RenderView& view, const RenderLightData& light, const Float4& cascadeSplits = Float4::Zero)
+    void Set(const RenderView& view, const RenderLightData& light, const Float4& cascadeSplits = Float4::Zero, const Float4& farCascadeSplits = Float4::Zero)
     {
         StaticValid = true;
         DynamicValid = true;
@@ -150,6 +151,7 @@ struct ShadowAtlasLightCache
             Position = view.Position;
             ViewDirection = view.Direction;
             CascadeSplits = cascadeSplits;
+            FarCascadeSplits = farCascadeSplits;
         }
         else
         {
@@ -200,6 +202,7 @@ struct ShadowAtlasLight
     BoundingSphere Bounds;
     float Sharpness, Fade, NormalOffsetScale, Bias, FadeDistance, Distance, TileBorder, CascadeBlendSize;
     Float4 CascadeSplits;
+    Float4 FarCascadeSplits;
     ShadowAtlasLightTile Tiles[SHADOWS_MAX_TILES];
     ShadowAtlasLightCache Cache;
 #if COMPILE_WITH_PROFILER
@@ -267,6 +270,7 @@ struct ShadowAtlasLight
             // Sun
             if (!Float3::NearEqual(Cache.Position, view.Position, SHADOWS_POSITION_ERROR) ||
                 !Float4::NearEqual(Cache.CascadeSplits, CascadeSplits) ||
+                !Float4::NearEqual(Cache.FarCascadeSplits, FarCascadeSplits) ||
                 Float3::Dot(Cache.ViewDirection, view.Direction) < SHADOWS_ROTATION_ERROR)
             {
                 // Invalidate
@@ -992,8 +996,10 @@ void ShadowsPass::SetupLight(ShadowsCustomBuffer& shadows, RenderContext& render
     atlasLight.Type = ShadowAtlasLight::Directional;
 #endif
     const int32 csmCount = atlasLight.TilesCount;
+    const int32 nearCount = Math::Min(csmCount, Math::Clamp(light.CascadeCount, 1, MAX_CSM_CASCADES));
     const auto shadowMapsSize = (float)atlasLight.Resolution;
-    atlasLight.BlendCSM = Graphics::AllowCSMBlending;
+    // Far cascades can have very wide transitions where dithering is visibly noisy.
+    atlasLight.BlendCSM = Graphics::AllowCSMBlending || csmCount > nearCount;
 #if USE_EDITOR
     // Disable cascades blending when baking lightmaps
     if (IsRunningRadiancePass)
@@ -1007,7 +1013,7 @@ void ShadowsPass::SetupLight(ShadowsCustomBuffer& shadows, RenderContext& render
     const float minDistance = renderContext.View.Near;
     const float maxDistance = renderContext.View.Near + atlasLight.Distance;
     const float viewRange = renderContext.View.Far - renderContext.View.Near;
-    float cascadeSplits[MAX_CSM_CASCADES];
+    float cascadeSplits[SHADOWS_MAX_TILES] = {};
     {
         PartitionMode partitionMode = light.PartitionMode;
         float splitDistance0 = light.Cascade1Spacing;
@@ -1018,22 +1024,22 @@ void ShadowsPass::SetupLight(ShadowsCustomBuffer& shadows, RenderContext& render
         // Compute the split distances based on the partitioning mode
         if (partitionMode == PartitionMode::Manual)
         {
-            if (csmCount == 1)
+            if (nearCount == 1)
             {
                 cascadeSplits[0] = minDistance + splitDistance3 * maxDistance;
             }
-            else if (csmCount == 2)
+            else if (nearCount == 2)
             {
                 cascadeSplits[0] = minDistance + splitDistance1 * maxDistance;
                 cascadeSplits[1] = minDistance + splitDistance3 * maxDistance;
             }
-            else if (csmCount == 3)
+            else if (nearCount == 3)
             {
                 cascadeSplits[0] = minDistance + splitDistance1 * maxDistance;
                 cascadeSplits[1] = minDistance + splitDistance2 * maxDistance;
                 cascadeSplits[2] = minDistance + splitDistance3 * maxDistance;
             }
-            else if (csmCount == 4)
+            else if (nearCount == 4)
             {
                 cascadeSplits[0] = minDistance + splitDistance0 * maxDistance;
                 cascadeSplits[1] = minDistance + splitDistance1 * maxDistance;
@@ -1048,21 +1054,26 @@ void ShadowsPass::SetupLight(ShadowsCustomBuffer& shadows, RenderContext& render
             const auto range = maxDistance - minDistance;
             const auto ratio = maxDistance / minDistance;
             const auto logRatio = Math::Clamp(1.0f - lambda, 0.0f, 1.0f);
-            for (int32 cascadeLevel = 0; cascadeLevel < csmCount; cascadeLevel++)
+            for (int32 cascadeLevel = 0; cascadeLevel < nearCount; cascadeLevel++)
             {
                 // Compute cascade split (between znear and zfar)
-                const float distribute = static_cast<float>(cascadeLevel + 1) / csmCount;
+                const float distribute = static_cast<float>(cascadeLevel + 1) / nearCount;
                 float logZ = minDistance * Math::Pow(ratio, distribute);
                 float uniformZ = minDistance + range * distribute;
                 cascadeSplits[cascadeLevel] = Math::Lerp(uniformZ, logZ, logRatio);
             }
         }
 
-        // Convert distance splits to ratios cascade in the range [0, 1]
-        for (int32 i = 0; i < MAX_CSM_CASCADES; i++)
+        const float farStart = cascadeSplits[nearCount - 1];
+        const float farEnd = Math::Min(renderContext.View.Far, light.FarShadowsDistance);
+        for (int32 i = nearCount; i < csmCount; i++)
+            cascadeSplits[i] = Math::Lerp(farStart, farEnd, static_cast<float>(i - nearCount + 1) / (csmCount - nearCount));
+
+        atlasLight.CascadeSplits = Float4(cascadeSplits);
+        atlasLight.FarCascadeSplits = Float4(cascadeSplits + 4);
+        for (int32 i = 0; i < csmCount; i++)
             cascadeSplits[i] = (cascadeSplits[i] - renderContext.View.Near) / viewRange;
     }
-    atlasLight.CascadeSplits = renderContext.View.Near + Float4(cascadeSplits) * viewRange;
     atlasLight.CascadeBlendSize = Math::Saturate(light.CascadeBlendSize);
 
     // Update cached state (invalidate it if the light changed)
@@ -1073,14 +1084,14 @@ void ShadowsPass::SetupLight(ShadowsCustomBuffer& shadows, RenderContext& render
     atlasLight.ContextCount = 0;
     for (int32 cascadeIndex = 0; cascadeIndex < csmCount; cascadeIndex++)
     {
-        float dstToCascade = cascadeIndex == 0 ? 0 : atlasLight.CascadeSplits.Raw[cascadeIndex - 1];
+        float dstToCascade = cascadeIndex == 0 ? 0 : (cascadeIndex <= 4 ? atlasLight.CascadeSplits.Raw[cascadeIndex - 1] : atlasLight.FarCascadeSplits.Raw[cascadeIndex - 5]);
         bool freezeUpdate;
         const float updateRateInv = atlasLight.CalculateUpdateRateInv(light, dstToCascade, freezeUpdate, cascadeIndex != 0);
 #if COMPILE_WITH_PROFILER
         atlasLight.CachedUpdateRateInv[cascadeIndex] = updateRateInv;
 #endif
         auto& tile = atlasLight.Tiles[cascadeIndex];
-        if ((tile.FramesToUpdate > 0.0f || freezeUpdate) && atlasLight.Cache.DynamicValid)
+        if (cascadeIndex < nearCount && (tile.FramesToUpdate > 0.0f || freezeUpdate) && atlasLight.Cache.DynamicValid)
         {
             // Light state matches the cached state and the update rate allows us to reuse the cached shadow map so skip update
             if (!freezeUpdate)
@@ -1088,7 +1099,10 @@ void ShadowsPass::SetupLight(ShadowsCustomBuffer& shadows, RenderContext& render
             tile.SkipUpdate = true;
             continue;
         }
-        tile.FramesToUpdate += updateRateInv - 1.0f;
+        if (cascadeIndex < nearCount)
+            tile.FramesToUpdate += updateRateInv - 1.0f;
+        else
+            tile.FramesToUpdate = 0.0f;
 
         // Cache the current state
         tile.SkipUpdate = false;
@@ -1100,7 +1114,7 @@ void ShadowsPass::SetupLight(ShadowsCustomBuffer& shadows, RenderContext& render
     if (atlasLight.ContextCount == 0)
         return;
     renderContextBatch.Contexts.AddDefault(atlasLight.ContextCount);
-    atlasLight.Cache.Set(renderContext.View, light, atlasLight.CascadeSplits);
+    atlasLight.Cache.Set(renderContext.View, light, atlasLight.CascadeSplits, atlasLight.FarCascadeSplits);
 
     // Get the 8 points of the view frustum in view-space (unproject from clip-space)
     Float3 frustumCornersVs[8];
@@ -1184,7 +1198,7 @@ void ShadowsPass::SetupLight(ShadowsCustomBuffer& shadows, RenderContext& render
         Matrix::LookAt(frustumCenter + light.Direction * minExtents.Z, frustumCenter, up, shadowView);
 
         // Create viewport for culling with extended near/far planes due to culling issues (aka pancaking)
-        const float cullRangeExtent = METERS_TO_UNITS(1000.0f);
+        const float cullRangeExtent = cascadeIndex >= nearCount ? Math::Max(METERS_TO_UNITS(1000.0f), frustumRadius) : METERS_TO_UNITS(1000.0f);
         Matrix::OrthoOffCenter(minExtents.X, maxExtents.X, minExtents.Y, maxExtents.Y, -cullRangeExtent, cascadeExtents.Z + cullRangeExtent, shadowProjection);
         Matrix::Multiply(shadowView, shadowProjection, cullingVP);
 
@@ -1481,7 +1495,11 @@ void ShadowsPass::SetupShadows(RenderContext& renderContext, RenderContextBatch&
 
         if (light->IsDirectionalLight)
         {
-            atlasLight.TilesNeeded = Math::Clamp(((const RenderDirectionalLightData*)light)->CascadeCount, 1, MAX_CSM_CASCADES);
+            const auto& directional = *(const RenderDirectionalLightData*)light;
+            atlasLight.TilesNeeded = Math::Clamp(directional.CascadeCount, 1, MAX_CSM_CASCADES);
+            const float nearEnd = renderContext.View.Near + Math::Min(renderContext.View.Far, light->ShadowsDistance);
+            if (Math::Min(renderContext.View.Far, directional.FarShadowsDistance) > nearEnd)
+                atlasLight.TilesNeeded += Math::Clamp(directional.FarCascadeCount, 0, MAX_CSM_CASCADES);
 
             // Views with orthographic cameras cannot use cascades, we force it to 1 shadow map here
             if (renderContext.View.IsOrthographicProjection())
@@ -1673,10 +1691,11 @@ RETRY_ATLAS_SETUP:
         // Write shadow data (this must match HLSL)
         {
             // Shadow info
-            auto* packed = shadows.ShadowsBuffer.WriteReserve<Float4>(2);
+            auto* packed = shadows.ShadowsBuffer.WriteReserve<Float4>(3);
             Color32 packed0x((byte)(atlasLight.Sharpness * (255.0f / 10.0f)), (byte)(atlasLight.Fade * 255.0f), (byte)atlasLight.TilesCount, (byte)(atlasLight.CascadeBlendSize * 255.0f));
             packed[0] = Float4(*(const float*)&packed0x, atlasLight.FadeDistance, atlasLight.NormalOffsetScale, atlasLight.Bias);
             packed[1] = atlasLight.CascadeSplits;
+            packed[2] = atlasLight.FarCascadeSplits;
         }
         const float tileBorder = atlasLight.TileBorder;
         for (int32 tileIndex = 0; tileIndex < atlasLight.TilesCount; tileIndex++)

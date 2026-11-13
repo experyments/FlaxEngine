@@ -751,6 +751,12 @@ void RenderInner(RenderContext& renderContext, RenderContextBatch& renderContext
         context->ResetSR();
     }
 
+    if (renderContext.List->PlanetClouds)
+    {
+        renderContext.List->PlanetClouds->DrawFog(context, renderContext, *lightBuffer);
+        context->ResetSR();
+    }
+
     // Run forward pass
     auto frameBuffer = RenderTargetPool::Get(tempDesc);
     RENDER_TARGET_POOL_SET_NAME(frameBuffer, "FrameBuffer");

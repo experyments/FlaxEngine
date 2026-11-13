@@ -22,6 +22,8 @@
 #include "./Flax/Shadows/ShadowsSampling.hlsl"
 #include "./Flax/GBuffer.hlsl"
 #include "./Flax/Lighting/VolumetricFog.hlsl"
+#include "./Flax/Lighting/ExponentialHeightFog.hlsl"
+#include "./Flax/Lighting/PlanetClouds.hlsl"
 #include "./Flax/GI/DDGI.hlsl"
 
 struct SkyLightData
@@ -52,6 +54,8 @@ float Dummy0;
 float InverseSquaredLightDistanceBiasScale;
 
 float4 FogParameters;
+float4 RadialCameraPosition;
+float4 RadialParameters;
 float4 GridSliceParameters;
 
 float4x4 PrevWorldToClip;
@@ -61,6 +65,11 @@ float4 FrameJitterOffsets[8];
 LightData DirectionalLight;
 SkyLightData SkyLight;
 DDGIData DDGI;
+
+float4 CloudCameraFromCenter;
+float4 CloudGeometry;
+float4 CloudSettings;
+float4 CloudAlbedo;
 META_CB_END
 
 META_CB_BEGIN(2, PerLight)
@@ -221,6 +230,8 @@ META_CS(true, FEATURE_LEVEL_SM5)
 void CS_Initialize(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
 	uint3 gridCoordinate = DispatchThreadId;
+	if (any(gridCoordinate >= GridSizeInt))
+		return;
 	float3 positionWS = GetCellPositionWS(gridCoordinate, 0.5f);
 
 	// Unpack the fog parameters (packing done in C++ ExponentialHeightFog::GetVolumetricFogOptions)
@@ -229,17 +240,26 @@ void CS_Initialize(uint3 DispatchThreadId : SV_DispatchThreadID)
 	float fogHeightFalloff = FogParameters.z;
 
 	// Calculate the global fog density that matches the exponential height fog density
-	float globalDensity = fogDensity * exp2(-fogHeightFalloff * (positionWS.y - fogHeight));
+	float altitude = RadialParameters.y > 0 ? GetRadialFogAltitude(RadialCameraPosition, positionWS - GBuffer.ViewPos) : positionWS.y - fogHeight;
+	float globalDensity = fogDensity * exp2(clamp(-fogHeightFalloff * altitude, -125.0f, 126.0f));
 	float extinction = max(0.0f, globalDensity * GlobalExtinctionScale * 0.24f);
 
 	float3 scattering = GlobalAlbedo * extinction;
 	float absorption = max(0.0f, extinction - Luminance(scattering));
 
-	if (all(gridCoordinate < GridSizeInt))
+	if (CloudSettings.z > 0.0f)
 	{
-		RWVBufferA[gridCoordinate] = float4(scattering, absorption);
-		RWVBufferB[gridCoordinate] = float4(GlobalEmissive, 0);
+		float3 offset = (positionWS - GBuffer.ViewPos) * 0.00001f;
+		float3 camera = CloudCameraFromCenter.xyz;
+		float cloudAltitude = CloudAltitude(camera, length(camera), CloudCameraFromCenter.w, offset);
+		float cloudDensity = PlanetCloudDensity(camera + offset, cloudAltitude, CloudGeometry, CloudSettings.x, CloudSettings.y);
+		float cloudExtinction = cloudDensity * CloudSettings.z * 0.00001f;
+		float3 cloudScattering = saturate(CloudAlbedo.rgb) * cloudExtinction;
+		scattering += cloudScattering;
+		absorption += max(0.0f, cloudExtinction - Luminance(cloudScattering));
 	}
+	RWVBufferA[gridCoordinate] = float4(scattering, absorption);
+	RWVBufferB[gridCoordinate] = float4(GlobalEmissive, 0);
 }
 
 #elif defined(_CS_LightScattering)

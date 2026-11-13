@@ -60,6 +60,7 @@ void DirectionalLight::Draw(RenderContextBatch& renderContextBatch)
         data.StaticFlags = GetStaticFlags();
         data.ID = GetID();
         data.ScreenSize = 1.0f;
+        SetupDirectionalLightData(data);
         renderContext.List->DirectionalLights.Add(data);
     }
 }
@@ -108,4 +109,34 @@ void DirectionalLight::OnTransformChanged()
 
     _box = BoundingBox(_transform.Translation);
     _sphere = BoundingSphere(_transform.Translation, 0.0f);
+}
+
+void DirectionalLight::SetupDirectionalLightData(RenderDirectionalLightData& data) const
+{
+}
+
+FarDirectionalLight::FarDirectionalLight(const SpawnParams& params)
+    : DirectionalLight(params)
+{
+}
+
+void FarDirectionalLight::SetupDirectionalLightData(RenderDirectionalLightData& data) const
+{
+    data.FarCascadeCount = FarCascadeCount;
+    data.FarShadowsDistance = FarShadowsDistance;
+}
+
+void FarDirectionalLight::Serialize(SerializeStream& stream, const void* otherObj)
+{
+    DirectionalLight::Serialize(stream, otherObj);
+    SERIALIZE_GET_OTHER_OBJ(FarDirectionalLight);
+    SERIALIZE(FarCascadeCount);
+    SERIALIZE(FarShadowsDistance);
+}
+
+void FarDirectionalLight::Deserialize(DeserializeStream& stream, ISerializeModifier* modifier)
+{
+    DirectionalLight::Deserialize(stream, modifier);
+    DESERIALIZE(FarCascadeCount);
+    DESERIALIZE(FarShadowsDistance);
 }

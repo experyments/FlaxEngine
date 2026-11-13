@@ -3,9 +3,56 @@
 #include "Engine/Core/Math/Vector3.h"
 #include "Engine/Core/Types/String.h"
 #include "Engine/Core/Types/StringView.h"
+#include "Engine/Core/ScopeExit.h"
+#include "Engine/Graphics/RenderView.h"
+#include "Engine/Level/Actors/ExponentialHeightFog.h"
+#include "Engine/Level/Actors/Sky.h"
 #include "Engine/Level/LargeWorlds.h"
 #include "Engine/Level/Tags.h"
 #include <ThirdParty/catch2/catch.hpp>
+
+TEST_CASE("Planet cloud defaults match the atmosphere")
+{
+    auto* sky = ScriptingObject::NewObject<PlanetSkyAtmosphere>();
+    auto* clouds = ScriptingObject::NewObject<PlanetVolumetricClouds>();
+    REQUIRE(sky);
+    REQUIRE(clouds);
+    SCOPE_EXIT { sky->DeleteObject(); clouds->DeleteObject(); };
+    CHECK(clouds->PlanetRadius == sky->PlanetRadius);
+    CHECK(clouds->CloudBaseHeight >= 0.0f);
+    CHECK(clouds->CloudThickness > 0.0f);
+    CHECK(clouds->Coverage > 0.0f);
+    CHECK(clouds->Density > 0.0f);
+    CHECK(clouds->AtmosphereColorInfluence == 0.5f);
+    CHECK(clouds->AtmosphereBrightnessInfluence == 1.0f);
+    CHECK(clouds->CloudBrightness == 1.0f);
+}
+
+TEST_CASE("Radial exponential fog")
+{
+    auto* fog = ScriptingObject::NewObject<RadialExponentialHeightFog>();
+    REQUIRE(fog);
+    SCOPE_EXIT { fog->DeleteObject(); };
+    CHECK(fog->Radius == 60000000.0f);
+    fog->SetPosition(Vector3(100000000, 200000000, -300000000));
+    fog->FogDensity = 0.1f;
+    fog->VolumetricFogEnable = true;
+
+    RenderView view;
+    view.Origin = fog->GetPosition() + Vector3(60000000, 0, 0);
+    view.Position = Float3(25, 0, 0);
+    ShaderExponentialHeightFogData surface;
+    VolumetricFogOptions volume;
+    fog->GetExponentialHeightFogData(view, surface);
+    fog->GetVolumetricFogOptions(view, volume);
+    CHECK(surface.RadialParameters.X == 60000000.0f);
+    CHECK(surface.RadialParameters.Y == 1.0f);
+    CHECK(surface.RadialCameraPosition.W == Approx(25.0f));
+    CHECK(volume.RadialCameraPosition == surface.RadialCameraPosition);
+    CHECK(volume.RadialParameters == surface.RadialParameters);
+    CHECK(volume.Enable);
+    CHECK(volume.FogParameters.X == Approx(0.0001f));
+}
 
 TEST_CASE("LargeWorlds")
 {

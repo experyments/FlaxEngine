@@ -271,6 +271,7 @@ bool ViewportIconsRendererService::Init()
 #define MAP_TYPE(type, iconType) ActorTypeToIconType.Add(type::TypeInitializer, IconTypes::iconType)
     MAP_TYPE(PointLight, PointLight);
     MAP_TYPE(DirectionalLight, DirectionalLight);
+    MAP_TYPE(FarDirectionalLight, DirectionalLight);
     MAP_TYPE(EnvironmentProbe, EnvironmentProbe);
     MAP_TYPE(Skybox, Skybox);
     MAP_TYPE(AudioListener, AudioListener);
@@ -279,7 +280,10 @@ bool ViewportIconsRendererService::Init()
     MAP_TYPE(ParticleEffect, ParticleEffect);
     MAP_TYPE(SceneAnimationPlayer, SceneAnimationPlayer);
     MAP_TYPE(ExponentialHeightFog, Skybox);
+    MAP_TYPE(RadialExponentialHeightFog, Skybox);
     MAP_TYPE(Sky, Skybox);
+    MAP_TYPE(PlanetSkyAtmosphere, Skybox);
+    MAP_TYPE(PlanetVolumetricClouds, Skybox);
     MAP_TYPE(SkyLight, SkyLight);
     MAP_TYPE(SpotLight, PointLight);
     MAP_TYPE(VideoPlayer, SceneAnimationPlayer);
