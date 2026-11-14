@@ -170,8 +170,10 @@ public partial class QuadSphereActor : Actor
         public Guid Id;
         public int Order;
         public QuadSphereBrushMode Mode;
-        public Vector3 Position;
-        public float Radius, Falloff, Depth, FlattenHeight;
+        public QuadSphereBrushShape Shape;
+        public Vector3 Position, AxisX, AxisY, AxisNormal;
+        public float Radius, Falloff, Depth;
+        public double FlattenHeight;
     }
 
     /// <summary>Whether the first complete terrain has usable collision on every committed patch. False when collision is disabled.</summary>
@@ -328,21 +330,37 @@ public partial class QuadSphereActor : Actor
         double innerExtent = Math.Max(0.01, _radius - _baseElevationBound) * minScale;
         foreach (var brush in Level.GetActors<QuadSphereBrush>(true))
         {
-            if (brush == null || !float.IsFinite(brush.Radius) || brush.Radius <= 0 ||
-                !float.IsFinite(brush.Falloff) || !float.IsFinite(brush.Depth) || !float.IsFinite(brush.FlattenHeight) ||
-                (brush.Mode != QuadSphereBrushMode.Carve && brush.Mode != QuadSphereBrushMode.Flatten))
+            if (brush == null || !brush.TargetsActor(this) || !float.IsFinite(brush.Radius) || brush.Radius <= 0 ||
+                !float.IsFinite(brush.Falloff) || !float.IsFinite(brush.Depth) ||
+                (brush.Mode != QuadSphereBrushMode.Carve && brush.Mode != QuadSphereBrushMode.Flatten) ||
+                (brush.Shape != QuadSphereBrushShape.Circle && brush.Shape != QuadSphereBrushShape.Square))
                 continue;
             var position = brush.Position;
             if (!double.IsFinite(position.X) || !double.IsFinite(position.Y) || !double.IsFinite(position.Z))
                 continue;
             double distance = (position - planetTransform.Translation).Length;
-            if (double.IsFinite(extent) && double.IsFinite(distance) && distance > extent + brush.Radius)
+            if (!double.IsFinite(distance))
                 continue;
-            if (double.IsFinite(innerExtent) && double.IsFinite(distance) && distance + brush.Radius < innerExtent)
+            double brushExtent = brush.Radius * (brush.Shape == QuadSphereBrushShape.Square ? Math.Sqrt(3.0) : 1.0);
+            if (double.IsFinite(extent) && distance > extent + brushExtent)
                 continue;
-            result.Add(new BrushData { Id = brush.ID, Order = brush.Order, Mode = brush.Mode, Position = position,
+            if (double.IsFinite(innerExtent) && distance + brushExtent < innerExtent)
+                continue;
+            double flattenHeight = brush.Mode == QuadSphereBrushMode.Flatten ? BrushFlattenHeight(position, planetTransform, _radius) : 0.0;
+            if (!double.IsFinite(flattenHeight))
+                continue;
+            var data = new BrushData { Id = brush.ID, Order = brush.Order, Mode = brush.Mode, Shape = brush.Shape, Position = position,
                 Radius = brush.Radius, Falloff = Math.Clamp(brush.Falloff, 0.0f, 1.0f),
-                Depth = Math.Max(0.0f, brush.Depth), FlattenHeight = brush.FlattenHeight });
+                Depth = Math.Max(0.0f, brush.Depth), FlattenHeight = flattenHeight };
+            if (brush.Shape == QuadSphereBrushShape.Square)
+            {
+                QuadSphereBrush.GetSquareAxes(position, planetTransform.Translation, brush.Orientation,
+                    out data.AxisNormal, out data.AxisX, out data.AxisY);
+                if (!double.IsFinite(data.AxisX.X) || !double.IsFinite(data.AxisX.Y) || !double.IsFinite(data.AxisX.Z) ||
+                    !double.IsFinite(data.AxisY.X) || !double.IsFinite(data.AxisY.Y) || !double.IsFinite(data.AxisY.Z))
+                    continue;
+            }
+            result.Add(data);
         }
         result.Sort((a, b) =>
         {
@@ -352,6 +370,9 @@ public partial class QuadSphereActor : Actor
         return result.ToArray();
     }
 
+    private static double BrushFlattenHeight(Vector3 position, Transform planetTransform, double radius) =>
+        planetTransform.WorldToLocal(position).Length - radius;
+
     private static bool SameBrushes(BrushData[] a, BrushData[] b)
     {
         if (a.Length != b.Length)
@@ -360,7 +381,8 @@ public partial class QuadSphereActor : Actor
         {
             var x = a[i];
             var y = b[i];
-            if (x.Id != y.Id || x.Order != y.Order || x.Mode != y.Mode || !x.Position.Equals(y.Position) ||
+            if (x.Id != y.Id || x.Order != y.Order || x.Mode != y.Mode || x.Shape != y.Shape || !x.Position.Equals(y.Position) ||
+                !x.AxisX.Equals(y.AxisX) || !x.AxisY.Equals(y.AxisY) || !x.AxisNormal.Equals(y.AxisNormal) ||
                 x.Radius != y.Radius || x.Falloff != y.Falloff || x.Depth != y.Depth || x.FlattenHeight != y.FlattenHeight)
                 return false;
         }
@@ -977,7 +999,11 @@ public partial class QuadSphereActor : Actor
         Vector3 worldPosition = settings.PlanetTransform.LocalToWorld(localPosition);
         foreach (var brush in settings.Brushes)
         {
-            double distance = (worldPosition - brush.Position).Length;
+            var offset = worldPosition - brush.Position;
+            double distance = brush.Shape == QuadSphereBrushShape.Square
+                ? Math.Max(Math.Abs(Vector3.Dot(offset, brush.AxisNormal)),
+                    Math.Max(Math.Abs(Vector3.Dot(offset, brush.AxisX)), Math.Abs(Vector3.Dot(offset, brush.AxisY))))
+                : offset.Length;
             if (distance >= brush.Radius)
                 continue;
             double weight = brush.Falloff <= 0 ? 1.0 : Math.Clamp((brush.Radius - distance) / (brush.Radius * brush.Falloff), 0.0, 1.0);
