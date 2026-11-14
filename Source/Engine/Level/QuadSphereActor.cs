@@ -8,6 +8,32 @@ using FlaxEngine;
 
 namespace Game;
 
+/// <summary>Noise settings for one quad-sphere biome layer.</summary>
+[Serializable]
+public struct QuadSphereBiomeLayer
+{
+    /// <summary>Noise frequency on the unit sphere.</summary>
+    [Limit(0, 4096), Tooltip("Noise frequency on the unit sphere. Higher values produce smaller regions.")]
+    public float NoiseFrequency;
+    /// <summary>Number of noise octaves.</summary>
+    [Limit(1, 8)]
+    public int NoiseOctaves;
+    /// <summary>Offset added to the terrain noise seed.</summary>
+    public int SeedOffset;
+    /// <summary>Scales this layer's noise score relative to the other layers.</summary>
+    [Limit(0, 16), Tooltip("Scales this layer's noise score relative to other layers.")]
+    public float NoiseContrast;
+
+    /// <summary>Creates default settings with the specified seed offset.</summary>
+    public QuadSphereBiomeLayer(int seedOffset)
+    {
+        NoiseFrequency = 4.0f;
+        NoiseOctaves = 3;
+        SeedOffset = seedOffset;
+        NoiseContrast = 2.0f;
+    }
+}
+
 /// <summary>A quad-sphere planet with distance-based terrain detail and an editor preview.</summary>
 public partial class QuadSphereActor : Actor
 {
@@ -21,6 +47,9 @@ public partial class QuadSphereActor : Actor
     public float UvRebaseRepeat = 0.0f;
     /// <summary>Base planet radius in local units.</summary>
     public double Radius = 100000.0;
+    /// <summary>Generate a sphere without terrain displacement or biome noise.</summary>
+    [Tooltip("Generate a sphere without terrain noise, heightmap, brushes, or biome generation. Layer 0 is used as a constant material fallback; LOD and collision still apply.")]
+    public bool SimpleSphere;
 
     /// <summary>Whether to generate terrain collision in play mode.</summary>
     [Tooltip("Generate collision for terrain patches in play mode. Changing this rebuilds the terrain.")]
@@ -66,6 +95,35 @@ public partial class QuadSphereActor : Actor
     /// <summary>Seed used to generate terrain noise.</summary>
     public int NoiseSeed = 12345;
 
+    /// <summary>Number of generated biome layers, stored in the patch vertex colors.</summary>
+    [Limit(1, 4), Tooltip("Number of biome layers (1-4). Use Quad Sphere Layer Weight nodes in a surface material; layers use vertex colors and follow patch mesh resolution. Rebuild terrain after changing.")]
+    public int BiomeLayerCount = 4;
+    /// <summary>Noise settings for the first material layer.</summary>
+    [Tooltip("Layer 0 noise settings. Rebuild terrain after changing.")]
+    public QuadSphereBiomeLayer BiomeLayer0 = new QuadSphereBiomeLayer(0);
+    /// <summary>Noise settings for the second material layer.</summary>
+    [Tooltip("Layer 1 noise settings. Rebuild terrain after changing.")]
+    public QuadSphereBiomeLayer BiomeLayer1 = new QuadSphereBiomeLayer(104729);
+    /// <summary>Noise settings for the third material layer.</summary>
+    [Tooltip("Layer 2 noise settings. Rebuild terrain after changing.")]
+    public QuadSphereBiomeLayer BiomeLayer2 = new QuadSphereBiomeLayer(209458);
+    /// <summary>Noise settings for the fourth material layer.</summary>
+    [Tooltip("Layer 3 noise settings. Rebuild terrain after changing.")]
+    public QuadSphereBiomeLayer BiomeLayer3 = new QuadSphereBiomeLayer(314187);
+    /// <summary>Width of the transition between competing biome layers.</summary>
+    [Limit(0, 1, 0.01f), Tooltip("Score range blended with the strongest biome layer: zero selects one layer. Rebuild terrain after changing.")]
+    public float BiomeBlendWidth = 0.5f;
+
+    /// <summary>Water surface radius measured from the planet center in local units.</summary>
+    [Tooltip("Distance from the planet center to the water surface in local units, not an offset from Radius. Rebuild terrain after changing.")]
+    public double WaterHeight = 100000.0;
+    /// <summary>Radial half-width of the beach band around the water surface.</summary>
+    [Tooltip("Radial height range on each side of the water surface used for the beach layer. Zero disables beaches. Rebuild terrain after changing.")]
+    public double BeachWidth = 0.0;
+    /// <summary>Strength of terrain flattening toward the water surface within the beach band.</summary>
+    [Limit(0, 1, 0.01f), Tooltip("How strongly the beach band flattens toward water height. Zero keeps terrain unchanged. Rebuild terrain after changing.")]
+    public float BeachSmoothing = 0.5f;
+
     /// <summary>Uncompressed equirectangular texture used for global terrain height.</summary>
     [Tooltip("Uncompressed equirectangular heightmap; the red channel is multiplied by Heightmap Height.")]
     public Texture Heightmap;
@@ -104,6 +162,12 @@ public partial class QuadSphereActor : Actor
     private int _noiseSeed;
     private float _heightmapHeight;
     private float _uvRebaseRepeat;
+    private bool _simpleSphere;
+    private int _biomeLayerCount;
+    private QuadSphereBiomeLayer[] _biomeLayers;
+    private float _biomeBlendWidth;
+    private double _waterHeight, _beachWidth;
+    private float _beachSmoothing;
     private HashSet<(int Face, int Level, int X, int Y)> _desired;
     private List<(int Face, int Level, int X, int Y)> _pendingKeys;
     private int _pendingIndex;
@@ -116,6 +180,12 @@ public partial class QuadSphereActor : Actor
         public double Radius;
         public float SkirtDepth, NoiseHeight, NoiseFrequency, HeightmapHeight, UvRebaseRepeat;
         public int Resolution, ChunksPerPatch, NoiseOctaves, NoiseSeed;
+        public bool SimpleSphere;
+        public int BiomeLayerCount;
+        public QuadSphereBiomeLayer[] BiomeLayers;
+        public float BiomeBlendWidth;
+        public double WaterHeight, BeachWidth;
+        public float BeachSmoothing;
         public HeightImage Heightmap;
         public BrushData[] Brushes;
         public Transform PlanetTransform;
@@ -127,6 +197,7 @@ public partial class QuadSphereActor : Actor
         public Double3 Origin;
         public Float3[] Vertices, Normals, Tangents;
         public Float2[] UVs;
+        public Color32[] BiomeWeights;
         public int[] Indices;
     }
 
@@ -279,27 +350,53 @@ public partial class QuadSphereActor : Actor
             Debug.LogError("Quad sphere radius must be positive, finite, and representable by patch meshes.");
             return;
         }
-        if (!float.IsFinite(SkirtDepth) || !float.IsFinite(NoiseHeight) || !float.IsFinite(NoiseFrequency) || !float.IsFinite(HeightmapHeight) || !float.IsFinite(UvRebaseRepeat) || UvRebaseRepeat < 0)
+        if (!float.IsFinite(SkirtDepth) || !float.IsFinite(UvRebaseRepeat) || UvRebaseRepeat < 0 ||
+            (!SimpleSphere && (!float.IsFinite(NoiseHeight) || !float.IsFinite(NoiseFrequency) || !float.IsFinite(HeightmapHeight) || !float.IsFinite(BiomeBlendWidth) ||
+                !double.IsFinite(BeachWidth) || BeachWidth < 0.0 || BeachWidth > float.MaxValue / 4.0 || !float.IsFinite(BeachSmoothing) ||
+                (BeachWidth > 0.0 && (!double.IsFinite(WaterHeight) || WaterHeight <= 0.0 || WaterHeight > float.MaxValue / 4.0)))))
         {
-            Debug.LogError("Quad sphere terrain settings must be finite, and UV rebase repeat must be nonnegative.");
+            Debug.LogError("Quad sphere settings must be finite, UV repeat and beach width must be nonnegative, and an enabled beach requires a positive water height.");
             return;
         }
         _radius = Radius;
+        _simpleSphere = SimpleSphere;
         _resolution = Math.Clamp(PatchResolution, 2, 128);
         _chunksPerPatch = Math.Clamp(ChunksPerPatch, 1, 128);
         _skirtDepth = Math.Max(0, SkirtDepth);
-        _noiseHeight = NoiseHeight;
-        _noiseFrequency = Math.Max(0, NoiseFrequency);
-        _noiseOctaves = Math.Clamp(NoiseOctaves, 0, 12);
+        _noiseHeight = _simpleSphere ? 0.0f : NoiseHeight;
+        _noiseFrequency = _simpleSphere ? 0.0f : Math.Max(0, NoiseFrequency);
+        _noiseOctaves = _simpleSphere ? 0 : Math.Clamp(NoiseOctaves, 0, 12);
         _noiseSeed = NoiseSeed;
-        _heightmapHeight = HeightmapHeight;
+        _heightmapHeight = _simpleSphere ? 0.0f : HeightmapHeight;
         _uvRebaseRepeat = UvRebaseRepeat;
-        if (Heightmap != null && !TryReadImage(Heightmap, out _heightmap))
+        _biomeLayerCount = Math.Clamp(BiomeLayerCount, 1, 4);
+        _biomeLayers = new[] { BiomeLayer0, BiomeLayer1, BiomeLayer2, BiomeLayer3 };
+        if (!_simpleSphere)
+        {
+            for (int i = 0; i < _biomeLayerCount; i++)
+            {
+                var layer = _biomeLayers[i];
+                if (!float.IsFinite(layer.NoiseFrequency) || !float.IsFinite(layer.NoiseContrast))
+                {
+                    Debug.LogError($"Quad sphere biome layer {i} noise settings must be finite.");
+                    return;
+                }
+                layer.NoiseFrequency = Math.Clamp(layer.NoiseFrequency, 0.0f, 4096.0f);
+                layer.NoiseOctaves = Math.Clamp(layer.NoiseOctaves, 1, 8);
+                layer.NoiseContrast = Math.Clamp(layer.NoiseContrast, 0.0f, 16.0f);
+                _biomeLayers[i] = layer;
+            }
+        }
+        _biomeBlendWidth = _simpleSphere ? 0.0f : Math.Clamp(BiomeBlendWidth, 0.0f, 1.0f);
+        _waterHeight = _simpleSphere ? _radius : WaterHeight;
+        _beachWidth = _simpleSphere ? 0.0 : BeachWidth;
+        _beachSmoothing = _simpleSphere ? 0.0f : Math.Clamp(BeachSmoothing, 0.0f, 1.0f);
+        if (!_simpleSphere && Heightmap != null && !TryReadImage(Heightmap, out _heightmap))
             return;
 
         _baseElevationBound = 2.0 * Math.Abs(_noiseHeight) + Math.Abs(_heightmapHeight) * MaxAbsRed(_heightmap);
         _brushTransform = Transform;
-        _brushes = CollectBrushes(_brushTransform);
+        _brushes = _simpleSphere ? Array.Empty<BrushData>() : CollectBrushes(_brushTransform);
         _failedBrushes = null;
         _brushCheckElapsed = 0;
         InitializeCullBounds();
@@ -437,7 +534,7 @@ public partial class QuadSphereActor : Actor
             RebuildTerrain();
             return;
         }
-        if (IsActiveInHierarchy && GenerateCollision != _generateCollision)
+        if (IsActiveInHierarchy && (GenerateCollision != _generateCollision || SimpleSphere != _simpleSphere))
         {
             RebuildTerrain();
             return;
@@ -527,7 +624,7 @@ public partial class QuadSphereActor : Actor
             DestroyPatch(patch);
         _retired.Clear();
         _brushCheckElapsed += Time.UnscaledDeltaTime;
-        if (_hasCompletedLod && _brushCheckElapsed >= 0.25f)
+        if (!_simpleSphere && _hasCompletedLod && _brushCheckElapsed >= 0.25f)
         {
             _brushCheckElapsed = 0;
             var planetTransform = Transform;
@@ -622,7 +719,7 @@ public partial class QuadSphereActor : Actor
         foreach (var brush in _brushes)
             displacement = brush.Mode == QuadSphereBrushMode.Carve
                 ? displacement + brush.Depth : Math.Max(displacement, Math.Abs(brush.FlattenHeight));
-        displacement += _skirtDepth + 0.01;
+        displacement += _beachWidth * _beachSmoothing + _skirtDepth + 0.01;
         // Normalizing (face, u, v) is at most 1-Lipschitz because its length is
         // at least one. The furthest point in the root square is sqrt(2)/N away.
         // The small padding covers float mesh vertices and direction rounding.
@@ -652,6 +749,8 @@ public partial class QuadSphereActor : Actor
         var snapshot = new TerrainSnapshot { Radius = _radius, Resolution = _resolution, ChunksPerPatch = _chunksPerPatch, SkirtDepth = _skirtDepth,
             NoiseHeight = _noiseHeight, NoiseFrequency = _noiseFrequency, NoiseOctaves = _noiseOctaves,
             NoiseSeed = _noiseSeed, HeightmapHeight = _heightmapHeight, Heightmap = _heightmap, UvRebaseRepeat = _uvRebaseRepeat,
+            SimpleSphere = _simpleSphere, BiomeLayerCount = _biomeLayerCount, BiomeLayers = _biomeLayers, BiomeBlendWidth = _biomeBlendWidth,
+            WaterHeight = _waterHeight, BeachWidth = _beachWidth, BeachSmoothing = _beachSmoothing,
             Brushes = _brushes, PlanetTransform = _brushTransform };
         bool hasTarget = TryGetLodTargetPosition(out var targetPosition);
         Vector3 target = hasTarget ? Transform.WorldToLocal(targetPosition) : Vector3.Zero;
@@ -804,6 +903,7 @@ public partial class QuadSphereActor : Actor
         var normals = new List<Float3>(vertices.Capacity);
         var tangents = new List<Float3>(vertices.Capacity);
         var uvs = new List<Float2>(vertices.Capacity);
+        var biomeWeights = new List<Color32>(vertices.Capacity);
         var indices = new List<int>(n * n * 6 + n * 24);
 
         for (int y = 0; y <= n; y++)
@@ -816,9 +916,14 @@ public partial class QuadSphereActor : Actor
                 double v = -1.0 + 2.0 * ((double)key.Y * n + y) / ((double)divisions * n);
                 Double3 direction = Direction(key.Face, u, v);
                 Double3 normal = SurfaceNormal(direction, settings);
-                vertices.Add(Surface(direction, settings) - origin);
+                // Sample the beach before flattening so the mask doesn't expand with smoothing.
+                double height = BaseElevation(direction, settings);
+                double beach = GetBeachWeight(height, settings);
+                height = FlattenBeach(height, beach, settings);
+                vertices.Add(direction * Math.Max(0.01, settings.Radius + height) - origin);
                 normals.Add(normal);
                 tangents.Add(SurfaceTangent(direction, normal, uAxis));
+                biomeWeights.Add(ApplyBeachWeight(GetBiomeWeights(direction, settings), beach));
                 // Every LOD shares the base chunk grid modulo the selected repeat period.
                 uvs.Add(new Float2((float)(uvStartX + x / (double)patchesPerChunk - uvOffsetX),
                     (float)(uvStartY + y / (double)patchesPerChunk - uvOffsetY)));
@@ -849,6 +954,7 @@ public partial class QuadSphereActor : Actor
                 normals.Add(normals[source]);
                 tangents.Add(tangents[source]);
                 uvs.Add(uvs[source]);
+                biomeWeights.Add(biomeWeights[source]);
                 if (i == 0) continue;
                 int previous = edge switch { 0 => i - 1, 1 => (i - 1) * (n + 1) + n, 2 => n * (n + 1) + n - i + 1, _ => (n - i + 1) * (n + 1) };
                 indices.Add(previous); indices.Add(start + i - 1); indices.Add(source);
@@ -857,7 +963,7 @@ public partial class QuadSphereActor : Actor
         }
 
         return new PatchGeometry { Key = key, Origin = origin, Vertices = vertices.ToArray(),
-            Normals = normals.ToArray(), Tangents = tangents.ToArray(), UVs = uvs.ToArray(), Indices = indices.ToArray() };
+            Normals = normals.ToArray(), Tangents = tangents.ToArray(), UVs = uvs.ToArray(), BiomeWeights = biomeWeights.ToArray(), Indices = indices.ToArray() };
     }
 
     private Patch CreatePatch(PatchGeometry geometry)
@@ -876,15 +982,19 @@ public partial class QuadSphereActor : Actor
             new VertexElement(VertexElement.Types.Normal, 1, 0, false, PixelFormat.R10G10B10A2_UNorm),
             new VertexElement(VertexElement.Types.Tangent, 1, 0, false, PixelFormat.R10G10B10A2_UNorm),
             new VertexElement(VertexElement.Types.TexCoord, 1, 0, false, PixelFormat.R32G32_Float) });
+        var biomeLayout = GPUVertexLayout.Get(new[] {
+            new VertexElement(VertexElement.Types.Color, 2, 0, false, PixelFormat.R8G8B8A8_UNorm) });
         if (accessor.AllocateBuffer(MeshBufferType.Index, indexArray.Length, PixelFormat.R32_UInt) ||
             accessor.AllocateBuffer(MeshBufferType.Vertex0, vertexArray.Length, positionLayout) ||
-            accessor.AllocateBuffer(MeshBufferType.Vertex1, vertexArray.Length, attributeLayout))
+            accessor.AllocateBuffer(MeshBufferType.Vertex1, vertexArray.Length, attributeLayout) ||
+            accessor.AllocateBuffer(MeshBufferType.Vertex2, vertexArray.Length, biomeLayout))
         {
             Destroy(model);
             throw new InvalidOperationException("Failed to allocate planet patch mesh buffers.");
         }
         indexArray.AsSpan().CopyTo(MemoryMarshal.Cast<byte, int>(accessor.Index().Data));
         accessor.Position().Set(vertexArray);
+        geometry.BiomeWeights.AsSpan().CopyTo(MemoryMarshal.Cast<byte, Color32>(accessor.Color().Data));
         var normalStream = accessor.Normal();
         var tangentStream = accessor.Tangent();
         var uvStream = accessor.TexCoord();
@@ -950,6 +1060,8 @@ public partial class QuadSphereActor : Actor
 
     private static Double3 SurfaceNormal(Double3 direction, TerrainSnapshot settings)
     {
+        if (settings.SimpleSphere)
+            return direction;
         var reference = Math.Abs(direction.Y) < 0.9 ? Double3.UnitY : Double3.UnitX;
         var right = Double3.Normalize(Double3.Cross(reference, direction));
         var up = Double3.Cross(direction, right);
@@ -975,6 +1087,14 @@ public partial class QuadSphereActor : Actor
 
     private static double Elevation(Double3 direction, TerrainSnapshot settings)
     {
+        double height = BaseElevation(direction, settings);
+        return FlattenBeach(height, GetBeachWeight(height, settings), settings);
+    }
+
+    private static double BaseElevation(Double3 direction, TerrainSnapshot settings)
+    {
+        if (settings.SimpleSphere)
+            return 0.0;
         double height = 0;
         double frequency = settings.NoiseFrequency;
         double amplitude = settings.NoiseHeight;
@@ -1014,6 +1134,119 @@ public partial class QuadSphereActor : Actor
                 height += (brush.FlattenHeight - height) * weight;
         }
         return height;
+    }
+
+    private static double GetBeachWeight(double height, TerrainSnapshot settings)
+    {
+        if (settings.SimpleSphere || settings.BeachWidth <= 0.0)
+            return 0.0;
+        double distance = Math.Abs(height - (settings.WaterHeight - settings.Radius));
+        double weight = Math.Clamp(1.0 - distance / settings.BeachWidth, 0.0, 1.0);
+        return weight * weight * (3.0 - 2.0 * weight);
+    }
+
+    private static double FlattenBeach(double height, double weight, TerrainSnapshot settings)
+    {
+        if (weight <= 0.0 || settings.BeachSmoothing <= 0.0f)
+            return height;
+        return height + ((settings.WaterHeight - settings.Radius) - height) * (weight * settings.BeachSmoothing);
+    }
+
+    private static Color32 ApplyBeachWeight(Color32 biome, double beach)
+    {
+        if (beach <= 0.0)
+            return biome;
+        if (beach >= 1.0)
+            return new Color32(0, 0, 0, 0);
+        // The remaining RGBA sum encodes the biome contribution; its complement is beach.
+        int biomeTotal = 255 - (int)Math.Round(Math.Clamp(beach, 0.0, 1.0) * 255.0);
+        Span<byte> weights = stackalloc byte[4];
+        Span<int> remainders = stackalloc int[4];
+        int remaining = biomeTotal;
+        for (int i = 0; i < 4; i++)
+        {
+            int scaled = biome[i] * biomeTotal;
+            weights[i] = (byte)(scaled / 255);
+            remainders[i] = scaled % 255;
+            remaining -= weights[i];
+        }
+        while (remaining-- > 0)
+        {
+            int best = 0;
+            for (int i = 1; i < 4; i++)
+                if (remainders[i] > remainders[best])
+                    best = i;
+            weights[best]++;
+            remainders[best] = -1;
+        }
+        return new Color32(weights[0], weights[1], weights[2], weights[3]);
+    }
+
+    // Classification depends only on the planet-local direction, not patch or LOD.
+    private static Color32 GetBiomeWeights(Double3 direction, TerrainSnapshot settings)
+    {
+        int count = Math.Clamp(settings.BiomeLayerCount, 1, 4);
+        if (settings.SimpleSphere || count == 1 || settings.BiomeLayers == null || settings.BiomeLayers.Length < count)
+            return new Color32(255, 0, 0, 0);
+
+        Span<double> scores = stackalloc double[4];
+        double maximum = double.NegativeInfinity;
+        int winner = 0;
+        for (int layerIndex = 0; layerIndex < count; layerIndex++)
+        {
+            var layer = settings.BiomeLayers[layerIndex];
+            double noise = 0.0, amplitude = 1.0, amplitudeSum = 0.0;
+            double frequency = layer.NoiseFrequency;
+            for (int octave = 0; octave < layer.NoiseOctaves; octave++)
+            {
+                int seed = unchecked(settings.NoiseSeed + layer.SeedOffset + octave * 1013);
+                noise += ValueNoise(direction * frequency, seed) * amplitude;
+                amplitudeSum += amplitude;
+                frequency *= 2.0;
+                amplitude *= 0.5;
+            }
+            scores[layerIndex] = amplitudeSum > 0.0 ? noise / amplitudeSum * layer.NoiseContrast : 0.0;
+            if (scores[layerIndex] > maximum)
+            {
+                maximum = scores[layerIndex];
+                winner = layerIndex;
+            }
+        }
+
+        Span<byte> weights = stackalloc byte[4];
+        weights.Clear();
+        if (settings.BiomeBlendWidth <= 0.0f)
+        {
+            weights[winner] = 255;
+            return new Color32(weights[0], weights[1], weights[2], weights[3]);
+        }
+
+        double total = 0.0;
+        for (int i = 0; i < count; i++)
+        {
+            double blend = Math.Clamp(1.0 - (maximum - scores[i]) / settings.BiomeBlendWidth, 0.0, 1.0);
+            scores[i] = blend * blend * (3.0 - 2.0 * blend);
+            total += scores[i];
+        }
+        // Largest-remainder quantization keeps the four UNorm channels normalized.
+        int remaining = 255;
+        for (int i = 0; i < count; i++)
+        {
+            double scaled = scores[i] * 255.0 / total;
+            weights[i] = (byte)scaled;
+            remaining -= weights[i];
+            scores[i] = scaled - weights[i];
+        }
+        while (remaining-- > 0)
+        {
+            int best = 0;
+            for (int i = 1; i < count; i++)
+                if (scores[i] > scores[best])
+                    best = i;
+            weights[best]++;
+            scores[best] = -1.0;
+        }
+        return new Color32(weights[0], weights[1], weights[2], weights[3]);
     }
 
     private static double ValueNoise(Double3 p, int seed)

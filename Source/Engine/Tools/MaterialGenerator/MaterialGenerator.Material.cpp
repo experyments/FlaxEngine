@@ -795,6 +795,28 @@ void MaterialGenerator::ProcessGroupMaterial(Box* box, Node* node, Value& value)
         _includes.Add(TEXT("./Flax/PostFX/GammaCorrectionCommon.hlsl"));
         break;
     }
+    // Quad Sphere Layer Weight
+    case 54:
+    {
+        const auto layer = node->Values[0].AsInt;
+        if (layer < 0 || layer > 4)
+        {
+            value = Value::Zero;
+            OnError(node, box, TEXT("Invalid quad sphere layer index."));
+            break;
+        }
+        const auto baseLayer = GetRootLayer();
+        if (!baseLayer || baseLayer->Domain != MaterialDomain::Surface)
+        {
+            value = Value::Zero;
+            break;
+        }
+        _treeLayer->UsageFlags |= MaterialUsageFlags::UseVertexColor;
+        value = layer == 4
+            ? Value(VariantType::Float, TEXT("saturate(1.0 - dot(GetVertexColor(input), float4(1, 1, 1, 1)))"))
+            : Value(VariantType::Float, String::Format(TEXT("GetVertexColor(input)[{0}]"), layer));
+        break;
+    }
     default:
         break;
     }

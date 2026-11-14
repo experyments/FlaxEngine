@@ -16,6 +16,16 @@ namespace FlaxEditor.Surface.Archetypes
     [HideInEditor]
     public static class Material
     {
+        private static string[] GetQuadSphereLayerNames()
+        {
+            var terrainLayers = LayersAndTagsSettings.GetCurrentTerrainLayers();
+            var names = new string[5];
+            for (int i = 0; i < 4; i++)
+                names[i] = i < terrainLayers.Length ? terrainLayers[i] : $"Layer {i}";
+            names[4] = "Beach";
+            return names;
+        }
+
         /// <summary>
         /// Blend modes (each enum item value maps to box ID).
         /// </summary>
@@ -1257,6 +1267,20 @@ namespace FlaxEditor.Surface.Archetypes
                     NodeElementArchetype.Factory.Input(0, "sRGB", true, typeof(Float3), 0),
                     NodeElementArchetype.Factory.Output(0, "Linear", typeof(Float3), 1),
                 ]
+            },
+            new NodeArchetype
+            {
+                TypeID = 54,
+                Title = "Quad Sphere Layer Weight",
+                Description = "Generated quad-sphere biome or beach weight. Uses vertex color channels; connect to a surface material.",
+                Flags = NodeFlags.MaterialGraph,
+                Size = new Float2(220, 30),
+                DefaultValues = new object[] { 0 },
+                Elements = new[]
+                {
+                    NodeElementArchetype.Factory.ComboBox(0, 0, 195.0f, 0, GetQuadSphereLayerNames()),
+                    NodeElementArchetype.Factory.Output(0, "", typeof(float), 0),
+                }
             },
         };
     }
