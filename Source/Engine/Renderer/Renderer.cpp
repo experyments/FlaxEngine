@@ -751,16 +751,19 @@ void RenderInner(RenderContext& renderContext, RenderContextBatch& renderContext
         context->ResetSR();
     }
 
-    if (renderContext.List->PlanetClouds)
-    {
-        renderContext.List->PlanetClouds->DrawFog(context, renderContext, *lightBuffer);
-        context->ResetSR();
-    }
-
     // Run forward pass
     auto frameBuffer = RenderTargetPool::Get(tempDesc);
     RENDER_TARGET_POOL_SET_NAME(frameBuffer, "FrameBuffer");
     ForwardPass::Instance()->Render(renderContext, lightBuffer, frameBuffer);
+
+    // Composite clouds over forward materials. Materials that do not write depth
+    // cannot occlude clouds, even when they are closer to the camera.
+    if (renderContext.List->PlanetClouds)
+    {
+        context->ResetSR();
+        renderContext.List->PlanetClouds->DrawFog(context, renderContext, *frameBuffer);
+        context->ResetSR();
+    }
 
     // Material and Custom PostFx
     renderContext.List->RunMaterialPostFxPass(context, renderContext, MaterialPostFxLocation::AfterForwardPass, frameBuffer, lightBuffer);
