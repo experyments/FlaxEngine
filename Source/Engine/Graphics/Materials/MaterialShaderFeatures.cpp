@@ -29,12 +29,18 @@ void ForwardShadingFeature::Bind(MaterialShader::BindParameters& params, Span<by
     const int32 shadowMapShaderRegisterIndex = srv + 3;
     const int32 volumetricFogTextureRegisterIndex = srv + 4;
     const int32 preIntegratedGFRegisterIndex = srv + 5;
+    const int32 atmosphereSkyRegisterIndex = srv + 6;
     const bool canUseShadow = view.Pass != DrawPass::Depth;
 
     // Set fog input
     data.ExponentialHeightFog = cache->Fog.ExponentialHeightFogData;
+    if (!cache->Fog.AtmosphereSky)
+        data.ExponentialHeightFog.RadialParameters.Z = 0.0f;
+    if (!cache->Fog.VolumetricFogTexture)
+        data.ExponentialHeightFog.VolumetricFogMaxDistance = -1.0f;
     data.VolumetricFogData = cache->Fog.VolumetricFogData;
     params.GPUContext->BindSR(volumetricFogTextureRegisterIndex, cache->Fog.VolumetricFogTexture);
+    params.GPUContext->BindSR(atmosphereSkyRegisterIndex, cache->Fog.AtmosphereSky);
 
     // Set directional light input
     GPUTexture* shadowMapAtlas = nullptr;

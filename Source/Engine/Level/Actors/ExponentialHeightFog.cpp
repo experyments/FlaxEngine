@@ -245,6 +245,7 @@ void ExponentialHeightFog::DrawFog(GPUContext* context, RenderContext& renderCon
         atmosphereSky = GBufferPass::Instance()->RenderSkybox(renderContext, context, true);
         context->SetViewportAndScissors(renderContext.Task ? renderContext.Task->GetViewport() : renderContext.Buffers->GetViewport());
     }
+    renderContext.List->Fog.AtmosphereSky = atmosphereSky;
 
     // Setup shader inputs
     Data data;

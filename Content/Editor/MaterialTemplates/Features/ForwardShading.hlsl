@@ -13,6 +13,7 @@
 #endif
 #include "./Flax/Lighting/Lighting.hlsl"
 #include "./Flax/Lighting/ExponentialHeightFog.hlsl"
+#include "./Flax/Lighting/AtmosphereFogColor.hlsl"
 #include "./Flax/Lighting/VolumetricFog.hlsl"
 #include "./Flax/Shadows/ShadowsSampling.hlsl"
 @2// Forward Shading: Constants
@@ -31,6 +32,7 @@ Buffer<float4> ShadowsBuffer : register(t__SRV__);
 Texture2D<float> ShadowMap : register(t__SRV__);
 Texture3D VolumetricFogTexture : register(t__SRV__);
 Texture2D PreIntegratedGF : register(t__SRV__);
+TextureCube AtmosphereSky : register(t__SRV__);
 @4// Forward Shading: Utilities
 // Public accessors for lighting data, use them as data binding might change but those methods will remain.
 LightData GetDirectionalLight() { return DirectionalLight; }
@@ -172,12 +174,15 @@ void PS_Forward(
 	float fogSceneDistance = gBuffer.ViewPos.z;
 #endif
 	float fogSkipDistance = max(ExponentialHeightFog.VolumetricFogMaxDistance - 100, 0);
-	float4 fog = GetExponentialHeightFog(ExponentialHeightFog, materialInput.WorldPosition, ViewPos, fogSkipDistance, fogSceneDistance);
+	ExponentialHeightFogData fogData = ExponentialHeightFog;
+	float3 atmosphereColor = ApplyAtmosphereFogColor(AtmosphereSky, fogData, materialInput.WorldPosition - ViewPos);
+	float4 fog = GetExponentialHeightFog(fogData, materialInput.WorldPosition, ViewPos, fogSkipDistance, fogSceneDistance);
 	if (ExponentialHeightFog.VolumetricFogMaxDistance > 0)
 	{
 		// Sample volumetric fog and mix it in
 		float2 screenUV = materialInput.SvPosition.xy * ScreenSize.zw;
 		float4 volumetricFog = SampleVolumetricFog(VolumetricFogTexture, VolumetricFog, materialInput.WorldPosition - ViewPos, screenUV, TemporalAAJitter);
+		volumetricFog.rgb *= lerp(float3(1, 1, 1), atmosphereColor, saturate(fogData.RadialParameters.z));
 		fog = CombineVolumetricFog(fog, volumetricFog);
 	}
 

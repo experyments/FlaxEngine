@@ -216,6 +216,7 @@ RenderFogData::RenderFogData()
 {
     Renderer = nullptr;
     VolumetricFogTexture = nullptr;
+    AtmosphereSky = nullptr;
     Platform::MemoryClear(&ExponentialHeightFogData, sizeof(ExponentialHeightFogData));
     ExponentialHeightFogData.FogMinOpacity = 1.0f;
     ExponentialHeightFogData.FogCutoffDistance = 0.1f;
@@ -227,6 +228,7 @@ RenderFogData::RenderFogData()
 void RenderFogData::Init(const RenderView& view, IFogRenderer* renderer)
 {
     Renderer = renderer;
+    AtmosphereSky = nullptr;
     renderer->GetExponentialHeightFogData(view, ExponentialHeightFogData);
     renderer->GetVolumetricFogOptions(view, VolumetricFog);
     if (!VolumetricFog.UseVolumetricFog())

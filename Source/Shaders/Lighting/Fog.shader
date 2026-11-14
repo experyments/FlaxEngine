@@ -7,6 +7,7 @@
 #include "./Flax/GBuffer.hlsl"
 #include "./Flax/Lighting/VolumetricFog.hlsl"
 #include "./Flax/Lighting/ExponentialHeightFog.hlsl"
+#include "./Flax/Lighting/AtmosphereFogColor.hlsl"
 #include "./Flax/Lighting/PlanetClouds.hlsl"
 
 // Disable Volumetric Fog if is not supported
@@ -43,42 +44,6 @@ Texture3D VolumetricFogTexture : register(t1);
 TextureCube AtmosphereSky : register(t2);
 Texture2D PlanetCloudTexture : register(t3);
 
-float3 GetAtmosphereFogDirection(float3 cameraToPosition, float4 cameraFromCenter, float radius)
-{
-	float3 up = dot(cameraFromCenter.xyz, cameraFromCenter.xyz) > 0.0001f ? normalize(cameraFromCenter.xyz) : float3(0, 1, 0);
-	float3 direction = dot(cameraToPosition, cameraToPosition) > 0.0001f ? normalize(cameraToPosition) : up;
-	float elevation = dot(direction, up);
-
-	// Stay clear of the planet silhouette, including the linear-filter footprint
-	// of the low-resolution sky capture. Use an angular margin so it also works
-	// when the horizon is well below the local horizontal at high altitude.
-	float altitude = max(cameraFromCenter.w, 0.0f);
-	float distanceFromCenter = max(radius + altitude, 0.0001f);
-	float horizon = -sqrt(saturate(altitude * (2.0f * radius + altitude) / (distanceFromCenter * distanceFromCenter)));
-	float minimumElevation = horizon * 0.9800666f + sqrt(saturate(1.0f - horizon * horizon)) * 0.1986693f; // 0.2 radians above the horizon
-	if (elevation < minimumElevation)
-	{
-		float3 horizontal = direction - up * elevation;
-		if (dot(horizontal, horizontal) < 0.0001f)
-			horizontal = cross(up, abs(up.y) < 0.9f ? float3(0, 1, 0) : float3(1, 0, 0));
-		direction = normalize(horizontal) * sqrt(saturate(1.0f - minimumElevation * minimumElevation)) + up * minimumElevation;
-	}
-	return direction;
-}
-
-float3 SampleAtmosphereFogColor(float3 direction, float4 cameraFromCenter)
-{
-	float3 up = dot(cameraFromCenter.xyz, cameraFromCenter.xyz) > 0.0001f ? normalize(cameraFromCenter.xyz) : float3(0, 1, 0);
-	float elevation = dot(direction, up);
-	float3 horizontal = direction - up * elevation;
-	float3 side = cross(up, horizontal);
-	// Rotate around local up so all taps keep the same safe elevation.
-	float3 left = up * elevation + horizontal * 0.9982005f - side * 0.0599640f;
-	float3 right = up * elevation + horizontal * 0.9982005f + side * 0.0599640f;
-	return AtmosphereSky.SampleLevel(SamplerLinearClamp, direction, 0).rgb * 0.5f
-		+ (AtmosphereSky.SampleLevel(SamplerLinearClamp, left, 0).rgb + AtmosphereSky.SampleLevel(SamplerLinearClamp, right, 0).rgb) * 0.25f;
-}
-
 META_PS(true, FEATURE_LEVEL_ES2)
 META_PERMUTATION_1(VOLUMETRIC_FOG=0)
 META_PERMUTATION_1(VOLUMETRIC_FOG=1)
@@ -99,17 +64,7 @@ float4 PS_Fog(Quad_VS2PS input) : SV_Target0
 	// or directional-light inscattering.
 	ExponentialHeightFogData fogData = ExponentialHeightFog;
 	float influence = saturate(fogData.RadialParameters.z);
-	float3 atmosphereColor = 1.0f;
-	if (influence > 0.0f && fogData.RadialParameters.y > 0.0f)
-	{
-		float3 cameraToPosition = worldPos - GBuffer.ViewPos;
-		float3 cameraFromCenter = fogData.RadialCameraPosition.xyz;
-		float3 up = dot(cameraFromCenter, cameraFromCenter) > 0.0001f ? normalize(cameraFromCenter) : float3(0, 1, 0);
-		float3 atmosphereDirection = cameraToPosition - 2.0f * min(dot(cameraToPosition, up), 0.0f) * up;
-		float3 skyDirection = GetAtmosphereFogDirection(atmosphereDirection, fogData.RadialCameraPosition, fogData.RadialParameters.x);
-		atmosphereColor = SampleAtmosphereFogColor(skyDirection, fogData.RadialCameraPosition);
-		fogData.FogInscatteringColor = lerp(fogData.FogInscatteringColor, atmosphereColor, influence);
-	}
+	float3 atmosphereColor = ApplyAtmosphereFogColor(AtmosphereSky, fogData, worldPos - GBuffer.ViewPos);
 	float4 fog = GetExponentialHeightFog(fogData, worldPos, GBuffer.ViewPos, skipDistance, viewPos.z);
 
 #if VOLUMETRIC_FOG
@@ -249,7 +204,7 @@ float4 RaymarchPlanetClouds(Quad_VS2PS input)
 		float3 up = camera / max(cameraLength, 0.000001f);
 		float3 atmosphereDirection = direction - 2.0f * min(dot(direction, up), 0.0f) * up;
 		float3 skyDirection = GetAtmosphereFogDirection(atmosphereDirection, CloudCameraFromCenter, CloudGeometry.x);
-		float3 skyColor = max(SampleAtmosphereFogColor(skyDirection, CloudCameraFromCenter), 0.0f);
+		float3 skyColor = max(SampleAtmosphereFogColor(AtmosphereSky, skyDirection, CloudCameraFromCenter), 0.0f);
 		float peak = max(skyColor.r, max(skyColor.g, skyColor.b));
 		float3 skyTint = peak > 0.0001f ? skyColor / peak : float3(1, 1, 1);
 		light += (1.0f - transmittance) * CloudTint.rgb * peak * CloudSettings.w;

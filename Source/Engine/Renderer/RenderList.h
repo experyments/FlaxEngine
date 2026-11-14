@@ -187,6 +187,7 @@ struct RenderFogData
 {
     IFogRenderer* Renderer;
     GPUTextureView* VolumetricFogTexture;
+    GPUTextureView* AtmosphereSky;
     ShaderExponentialHeightFogData ExponentialHeightFogData;
     ShaderVolumetricFogData VolumetricFogData;
     VolumetricFogOptions VolumetricFog;
