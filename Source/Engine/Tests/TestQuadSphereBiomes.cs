@@ -26,6 +26,353 @@ public partial class QuadSphereActor
             BiomeBlendWidth = 0.5f,
         };
 
+#if FLAX_EDITOR
+        [Test]
+        public void InspectorPrefabEntryMatchesConstructorDefaults()
+        {
+            // ArrayEditor creates a new entry using TypeUtils.GetDefaultValue, not new T().
+            var config = (QuadSpherePrefabConfig)FlaxEngine.Utilities.TypeUtils.GetDefaultValue(
+                new FlaxEditor.Scripting.ScriptType(typeof(QuadSpherePrefabConfig)));
+            var expected = new QuadSpherePrefabConfig();
+            Assert.That(config, Is.EqualTo(expected));
+            Assert.That(ValidPrefabConfig(config), Is.True);
+            Assert.That(config.Biomes, Is.EqualTo(QuadSpherePrefabBiomes.All));
+            Assert.That(PrefabAltitudeWeight(100000, config), Is.EqualTo(1));
+        }
+#endif
+
+        [Test]
+        public void FoliageFaceRangesIncludeEveryNearbyCellAcrossSeams()
+        {
+            var planet = new QuadSphereActor();
+            try
+            {
+                planet._radius = 1000;
+                planet._foliageDivisions = 16;
+                var random = new Random(12345);
+                for (int sample = 0; sample < 100; sample++)
+                {
+                    var camera = new Double3(random.NextDouble() * 3000 - 1500, random.NextDouble() * 3000 - 1500, random.NextDouble() * 3000 - 1500);
+                    double distance = random.NextDouble() * 2000;
+                    for (int face = 0; face < 6; face++)
+                    {
+                        bool intersects = planet.FoliageFaceRange(face, camera, distance, out int minX, out int maxX, out int minY, out int maxY);
+                        for (int y = 0; y < planet._foliageDivisions; y++)
+                            for (int x = 0; x < planet._foliageDivisions; x++)
+                            {
+                                var center = (Double3)planet.FoliageCellCenter(face, x, y);
+                                if ((center - camera).Length <= distance)
+                                {
+                                    Assert.That(intersects, Is.True);
+                                    Assert.That(x, Is.InRange(minX, maxX));
+                                    Assert.That(y, Is.InRange(minY, maxY));
+                                }
+                            }
+                    }
+                }
+            }
+            finally
+            {
+                FlaxEngine.Object.Destroy(planet);
+            }
+        }
+
+#if FLAX_EDITOR
+        [Test]
+        public void InspectorFoliageEntryMatchesConstructorDefaults()
+        {
+            var config = (QuadSphereFoliageConfig)FlaxEngine.Utilities.TypeUtils.GetDefaultValue(
+                new FlaxEditor.Scripting.ScriptType(typeof(QuadSphereFoliageConfig)));
+            Assert.That(config, Is.EqualTo(new QuadSphereFoliageConfig()));
+            Assert.That(ValidPrefabConfig(FoliagePlacementSettings(config)), Is.True);
+        }
+#endif
+
+        [Test]
+        public void PrefabRandomIsStableAndDependsOnPlacementIdentity()
+        {
+            double value = PrefabRandom(12345, 7, 2, 42, 1);
+            Assert.That(value, Is.InRange(0.0, 1.0));
+            Assert.That(PrefabRandom(12345, 7, 2, 42, 1), Is.EqualTo(value));
+            Assert.That(PrefabRandom(12346, 7, 2, 42, 1), Is.Not.EqualTo(value));
+            Assert.That(PrefabRandom(12345, 8, 2, 42, 1), Is.Not.EqualTo(value));
+            Assert.That(PrefabRandom(12345, 7, 3, 42, 1), Is.Not.EqualTo(value));
+            Assert.That(PrefabRandom(12345, 7, 2, 43, 1), Is.Not.EqualTo(value));
+            Assert.That(PrefabRandom(12345, 7, 2, 42, 2), Is.Not.EqualTo(value));
+        }
+
+        [Test]
+        public void FoliagePlacementUsesDeterministicTerrainAndBiomeFilters()
+        {
+            var planet = new QuadSphereActor();
+            try
+            {
+                planet._prefabSnapshot = CreateSettings();
+                planet._prefabSnapshot.SimpleSphere = true;
+                planet._noiseSeed = 12345;
+                var config = FoliagePlacementSettings(new QuadSphereFoliageConfig());
+                int accepted = 0;
+                for (int attempt = 0; attempt < 64; attempt++)
+                {
+                    bool first = planet.TryPlacement(config, 8, 0, 0, 0, 0, 0, attempt, false, out var surface);
+                    bool again = planet.TryPlacement(config, 8, 0, 0, 0, 0, 0, attempt, false, out var reentered);
+                    Assert.That(again, Is.EqualTo(first));
+                    Assert.That(reentered, Is.EqualTo(surface));
+                    if (first)
+                        accepted++;
+                }
+                Assert.That(accepted, Is.GreaterThan(0));
+                config.Biomes = QuadSpherePrefabBiomes.Layer1;
+                for (int attempt = 0; attempt < 64; attempt++)
+                    Assert.That(planet.TryPlacement(config, 8, 0, 0, 0, 0, 0, attempt, false, out _), Is.False);
+            }
+            finally
+            {
+                FlaxEngine.Object.Destroy(planet);
+            }
+        }
+
+        [Test]
+        public void FoliageCollisionPoolTracksClosestEligiblePlacements()
+        {
+            var planet = new QuadSphereActor();
+            try
+            {
+                planet.FoliageSpawnDistance = 100;
+                planet.FoliageCollisionDistance = 20;
+                planet.MaxFoliageColliders = 1;
+                planet._foliageConfigs = new[] { new QuadSphereFoliageConfig { CollisionSize = new Float3(2, 4, 2), CollisionOffset = new Float3(0, 2, 0) } };
+                var cell = new FoliageCell { Complete = true, Renderer = new Foliage() };
+                cell.Placements.Add(new FoliagePlacement { Entry = 0, Transform = new Transform(new Vector3(1, 0, 0)) });
+                cell.Placements.Add(new FoliagePlacement { Entry = 0, Transform = new Transform(new Vector3(9, 0, 0)) });
+                planet._foliageCells.Add((7, 0), cell);
+
+                planet.UpdateFoliageColliders(Vector3.Zero, Transform.Identity);
+                Assert.That(planet._foliageActiveColliders.Count, Is.EqualTo(1));
+                Assert.That(planet._foliageActiveColliders.ContainsKey((7, 0, 0)), Is.True);
+                var collider = planet._foliageActiveColliders[(7, 0, 0)];
+                Assert.That(collider.LocalPosition, Is.EqualTo(new Vector3(1, 2, 0)));
+
+                planet.UpdateFoliageColliders(new Vector3(10, 0, 0), Transform.Identity);
+                Assert.That(planet._foliageActiveColliders.ContainsKey((7, 0, 1)), Is.True);
+                Assert.That(planet._foliageActiveColliders[(7, 0, 1)], Is.EqualTo(collider));
+                planet.MaxFoliageColliders = 0;
+                planet.UpdateFoliageColliders(Vector3.Zero, Transform.Identity);
+                Assert.That(planet._foliageActiveColliders.Count, Is.Zero);
+                Assert.That(planet._foliageColliderPool.Count, Is.EqualTo(1));
+            }
+            finally
+            {
+                planet.ClearFoliage();
+                FlaxEngine.Object.Destroy(planet);
+            }
+        }
+
+        [Test]
+        public void FoliageDeserializationPreservesLegacyDefaultsAndExplicitZero()
+        {
+            var legacy = FlaxEngine.Json.JsonSerializer.Deserialize<QuadSphereFoliageConfig>("{\"Density\":2}");
+            Assert.That(legacy.SpawnDistance, Is.EqualTo(-1));
+            Assert.That(legacy.CollisionDistance, Is.EqualTo(-1));
+            Assert.That(legacy.MaxColliders, Is.EqualTo(-1));
+            var disabled = FlaxEngine.Json.JsonSerializer.Deserialize<QuadSphereFoliageConfig>(
+                "{\"SpawnDistance\":0,\"CollisionDistance\":0,\"MaxColliders\":0}");
+            Assert.That(disabled.SpawnDistance, Is.Zero);
+            Assert.That(disabled.CollisionDistance, Is.Zero);
+            Assert.That(disabled.MaxColliders, Is.Zero);
+        }
+
+        [Test]
+        public void FoliageEntriesUseIndependentDistancesAndColliderLimits()
+        {
+            var planet = new QuadSphereActor();
+            try
+            {
+                planet.FoliageSpawnDistance = 150;
+                planet.FoliageCollisionDistance = 30;
+                planet.MaxFoliageColliders = 3;
+                var legacy = new QuadSphereFoliageConfig();
+                Assert.That(planet.FoliageEntrySpawnDistance(legacy), Is.EqualTo(150));
+                Assert.That(planet.FoliageEntryCollisionDistance(legacy), Is.EqualTo(30));
+                Assert.That(planet.FoliageEntryColliderLimit(legacy), Is.EqualTo(3));
+
+                planet._foliageConfigs = new[]
+                {
+                    new QuadSphereFoliageConfig { SpawnDistance = 100, CollisionDistance = 50, MaxColliders = 1, CollisionSize = new Float3(2, 4, 2) },
+                    new QuadSphereFoliageConfig { SpawnDistance = 5, CollisionDistance = 20, MaxColliders = 2, CollisionSize = new Float3(1, 1, 1) },
+                };
+                var trees = new FoliageCell { Complete = true, Renderer = new Foliage() };
+                trees.Placements.Add(new FoliagePlacement { Entry = 0, Transform = new Transform(new Vector3(1, 0, 0)) });
+                trees.Placements.Add(new FoliagePlacement { Entry = 0, Transform = new Transform(new Vector3(2, 0, 0)) });
+                var grass = new FoliageCell { Complete = true, Renderer = new Foliage() };
+                grass.Placements.Add(new FoliagePlacement { Entry = 1, Transform = new Transform(new Vector3(3, 0, 0)) });
+                grass.Placements.Add(new FoliagePlacement { Entry = 1, Transform = new Transform(new Vector3(6, 0, 0)) });
+                planet._foliageCells.Add((7, 0), trees);
+                planet._foliageCells.Add((7, 1), grass);
+
+                planet.UpdateFoliageColliders(Vector3.Zero, Transform.Identity);
+                Assert.That(planet._foliageActiveColliders.Count, Is.EqualTo(2));
+                Assert.That(planet._foliageActiveColliders.ContainsKey((7, 0, 0)), Is.True);
+                Assert.That(planet._foliageActiveColliders.ContainsKey((7, 1, 0)), Is.True);
+                Assert.That(planet._foliageActiveColliders.ContainsKey((7, 1, 1)), Is.False);
+
+                planet._foliageConfigs[1].CollisionDistance = 0;
+                planet.UpdateFoliageColliders(Vector3.Zero, Transform.Identity);
+                Assert.That(planet._foliageActiveColliders.Count, Is.EqualTo(1));
+                Assert.That(planet._foliageActiveColliders.ContainsKey((7, 0, 0)), Is.True);
+            }
+            finally
+            {
+                planet.ClearFoliage();
+                FlaxEngine.Object.Destroy(planet);
+            }
+        }
+
+        [Test]
+        public void PrefabRangeUsesWorldSpaceAndIncludesBoundary()
+        {
+            var rotation = Quaternion.RotationAxis(Float3.UnitZ, Mathf.PiOverTwo);
+            var transform = new Transform(new Vector3(60000000, -900000, 120000), rotation, new Float3(2, 3, 4));
+            var position = transform.LocalToWorld(new Vector3(0, 100, 0));
+            Assert.That(PrefabInRange(position, position + new Vector3(0, 3, 4), 5), Is.True);
+            Assert.That(PrefabInRange(position, position + new Vector3(0, 3, 4), 4.99), Is.False);
+            Assert.That(PrefabInRange(position, new Vector3(float.NaN, 0, 0), 5), Is.False);
+        }
+
+        [Test]
+        public void PrefabCleanupChecksActorWorldPositionAndAllowsLaterReentry()
+        {
+            var planet = new QuadSphereActor();
+            var instance = new QuadSphereActor();
+            try
+            {
+                planet.PrefabSpawnDistance = 10;
+                var surface = new Vector3(100, 0, 0);
+                var chunk = new PrefabChunk();
+                chunk.Candidates.Add(new PrefabCandidate { Surface = surface, Actor = instance, SpawnAttempted = true });
+                planet._prefabChunks.Add(0, chunk);
+                instance.Position = surface;
+                planet.CleanupPrefabDistances(surface);
+                Assert.That(chunk.Candidates[0].Actor, Is.EqualTo(instance));
+
+                // The actor moved independently while its original placement is still in range.
+                instance.Position = surface + new Vector3(20, 0, 0);
+                planet.CleanupPrefabDistances(surface);
+                instance = null; // Cleanup scheduled its destruction.
+                Assert.That(chunk.Candidates[0].Actor, Is.Null);
+                Assert.That(chunk.Candidates[0].SpawnAttempted, Is.True);
+                planet.CleanupPrefabDistances(surface + new Vector3(100, 0, 0));
+                Assert.That(chunk.Candidates[0].SpawnAttempted, Is.False);
+                Assert.That(PrefabInRange(chunk.Candidates[0].Surface, surface, planet.PrefabSpawnDistance), Is.True);
+            }
+            finally
+            {
+                if (instance != null)
+                    FlaxEngine.Object.Destroy(instance);
+                FlaxEngine.Object.Destroy(planet);
+            }
+        }
+
+        [Test]
+        public void PrefabCandidatesRemainDeterministicAcrossMovementAndChunkReentry()
+        {
+            var planet = new QuadSphereActor();
+            try
+            {
+                planet._prefabSnapshot = CreateSettings();
+                planet._prefabSnapshot.SimpleSphere = true;
+                planet._chunksPerPatch = 2;
+                planet._noiseSeed = 12345;
+                planet.PrefabSpawnDistance = 10;
+                var config = new QuadSpherePrefabConfig();
+                var first = new PrefabChunk();
+                var reentered = new PrefabChunk();
+                for (int attempt = 0; attempt < 64; attempt++)
+                {
+                    planet.AddPrefabCandidate(config, first, 0, 0, 0, 0, attempt);
+                    planet.AddPrefabCandidate(config, reentered, 0, 0, 0, 0, attempt);
+                }
+                Assert.That(first.Candidates.Count, Is.GreaterThan(0));
+                Assert.That(reentered.Candidates.Count, Is.EqualTo(first.Candidates.Count));
+                for (int i = 0; i < first.Candidates.Count; i++)
+                    Assert.That(reentered.Candidates[i].Surface, Is.EqualTo(first.Candidates[i].Surface));
+
+                var candidate = first.Candidates[0];
+                var worldPosition = planet.Transform.LocalToWorld(candidate.Surface);
+                var farCamera = worldPosition + new Vector3(100, 0, 0);
+                Assert.That(PrefabInRange(worldPosition, farCamera, planet.PrefabSpawnDistance), Is.False);
+                Assert.That(PrefabInRange(worldPosition, worldPosition, planet.PrefabSpawnDistance), Is.True);
+
+                candidate.SpawnAttempted = true;
+                first.Candidates[0] = candidate;
+                planet._prefabChunks.Add(0, first);
+                planet.CleanupPrefabDistances(worldPosition);
+                Assert.That(first.Candidates[0].SpawnAttempted, Is.True);
+                planet.CleanupPrefabDistances(farCamera);
+                Assert.That(first.Candidates[0].SpawnAttempted, Is.False);
+                Assert.That(first.Candidates[0].Surface, Is.EqualTo(candidate.Surface));
+                Assert.That(PrefabInRange(planet.Transform.LocalToWorld(first.Candidates[0].Surface), worldPosition, planet.PrefabSpawnDistance), Is.True);
+            }
+            finally
+            {
+                FlaxEngine.Object.Destroy(planet);
+            }
+        }
+
+        [Test]
+        public void PrefabAltitudeFalloffIsInsideRadialRange()
+        {
+            var config = new QuadSpherePrefabConfig { MinAltitude = 100, MaxAltitude = 200, AltitudeFalloff = 20 };
+            Assert.That(PrefabAltitudeWeight(99, config), Is.EqualTo(0));
+            Assert.That(PrefabAltitudeWeight(100, config), Is.EqualTo(0));
+            Assert.That(PrefabAltitudeWeight(110, config), Is.EqualTo(0.5));
+            Assert.That(PrefabAltitudeWeight(150, config), Is.EqualTo(1));
+            Assert.That(PrefabAltitudeWeight(190, config), Is.EqualTo(0.5));
+            Assert.That(PrefabAltitudeWeight(201, config), Is.EqualTo(0));
+            config.AltitudeFalloff = 0;
+            Assert.That(PrefabAltitudeWeight(100, config), Is.EqualTo(1));
+        }
+
+        [Test]
+        public void ZeroAltitudeLimitsAreIgnoredIncludingFalloff()
+        {
+            var config = new QuadSpherePrefabConfig { MinAltitude = 0, MaxAltitude = 0, AltitudeFalloff = 20 };
+            Assert.That(ValidPrefabConfig(config), Is.True);
+            Assert.That(PrefabAltitudeWeight(0, config), Is.EqualTo(1));
+            Assert.That(PrefabAltitudeWeight(100000, config), Is.EqualTo(1));
+
+            config.MinAltitude = 100;
+            Assert.That(ValidPrefabConfig(config), Is.True);
+            Assert.That(PrefabAltitudeWeight(99, config), Is.EqualTo(0));
+            Assert.That(PrefabAltitudeWeight(110, config), Is.EqualTo(0.5));
+            Assert.That(PrefabAltitudeWeight(100000, config), Is.EqualTo(1));
+
+            config.MinAltitude = 0;
+            config.MaxAltitude = 200;
+            Assert.That(PrefabAltitudeWeight(0, config), Is.EqualTo(1));
+            Assert.That(PrefabAltitudeWeight(190, config), Is.EqualTo(0.5));
+            Assert.That(PrefabAltitudeWeight(201, config), Is.EqualTo(0));
+
+            config.MinAltitude = 201;
+            Assert.That(ValidPrefabConfig(config), Is.False);
+        }
+
+        [Test]
+        public void PrefabBiomesIncludeBeachAndSimpleSphereFallback()
+        {
+            var settings = CreateSettings();
+            settings.SimpleSphere = true;
+            Assert.That(PrefabBiomeWeight(Double3.UnitY, QuadSpherePrefabBiomes.Layer0, settings), Is.EqualTo(1));
+            Assert.That(PrefabBiomeWeight(Double3.UnitY, QuadSpherePrefabBiomes.Layer1 | QuadSpherePrefabBiomes.Beach, settings), Is.EqualTo(0));
+            settings.SimpleSphere = false;
+            settings.BiomeLayerCount = 1;
+            settings.WaterHeight = settings.Radius;
+            settings.BeachWidth = 100;
+            Assert.That(PrefabBiomeWeight(Double3.UnitY, QuadSpherePrefabBiomes.Layer0, settings), Is.EqualTo(0));
+            Assert.That(PrefabBiomeWeight(Double3.UnitY, QuadSpherePrefabBiomes.Beach, settings), Is.EqualTo(1));
+            Assert.That(PrefabBiomeWeight(Double3.UnitY, QuadSpherePrefabBiomes.All, settings), Is.EqualTo(1).Within(1e-8));
+        }
+
         [Test]
         public void WeightsAreNormalizedDeterministicAndSeeded()
         {

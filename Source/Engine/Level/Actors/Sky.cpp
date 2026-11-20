@@ -599,6 +599,7 @@ void PlanetVolumetricClouds::Serialize(SerializeStream& stream, const void* othe
     SERIALIZE(RaymarchSteps);
     SERIALIZE(ShadowSampleFrequency);
     SERIALIZE(VolumetricFogContribution);
+    SERIALIZE(RenderResolutionScale);
 }
 
 void PlanetVolumetricClouds::Deserialize(DeserializeStream& stream, ISerializeModifier* modifier)
@@ -619,6 +620,7 @@ void PlanetVolumetricClouds::Deserialize(DeserializeStream& stream, ISerializeMo
     DESERIALIZE(RaymarchSteps);
     DESERIALIZE(ShadowSampleFrequency);
     DESERIALIZE(VolumetricFogContribution);
+    DESERIALIZE(RenderResolutionScale);
 }
 
 bool PlanetVolumetricClouds::HasContentLoaded() const
@@ -629,6 +631,12 @@ bool PlanetVolumetricClouds::HasContentLoaded() const
 bool PlanetVolumetricClouds::IntersectsItself(const Ray& ray, Real& distance, Vector3& normal)
 {
     return false;
+}
+
+Int2 PlanetVolumetricClouds::GetCloudRenderSize(int32 width, int32 height) const
+{
+    const float scale = isnan(RenderResolutionScale) ? 0.5f : Math::Clamp(RenderResolutionScale, 0.25f, 1.0f);
+    return Int2(Math::Max(Math::CeilToInt(width * scale), 1), Math::Max(Math::CeilToInt(height * scale), 1));
 }
 
 void PlanetVolumetricClouds::DrawFog(GPUContext* context, RenderContext& renderContext, GPUTextureView* output)
@@ -650,8 +658,9 @@ void PlanetVolumetricClouds::DrawFog(GPUContext* context, RenderContext& renderC
         context->ResetSR();
     }
 
-    const int32 width = Math::Max((renderContext.Buffers->GetWidth() + 1) / 2, 1);
-    const int32 height = Math::Max((renderContext.Buffers->GetHeight() + 1) / 2, 1);
+    const Int2 size = GetCloudRenderSize(renderContext.Buffers->GetWidth(), renderContext.Buffers->GetHeight());
+    const int32 width = size.X;
+    const int32 height = size.Y;
     auto cloudBuffer = RenderTargetPool::Get(GPUTextureDescription::New2D(width, height, PixelFormat::R16G16B16A16_Float));
     if (!cloudBuffer)
         return;

@@ -40,7 +40,9 @@ public class Engine : EngineModule
         options.PublicDependencies.Add("Visject");
         options.PublicDependencies.Add("Localization");
         options.PublicDependencies.Add("Online");
-
+        options.ScriptingAPI.FileReferences.Add(
+         Path.Combine(FolderPath, "..", "..", "ThirdParty", "EnttSharp.dll"));
+        options.DependencyFiles.Add(Path.Combine(FolderPath, "..", "..", "ThirdParty", "EnttSharp.dll"));
         // Use source folder per platform group
         switch (options.Platform.Target)
         {

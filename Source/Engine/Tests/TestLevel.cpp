@@ -10,6 +10,7 @@
 #include "Engine/Level/LargeWorlds.h"
 #include "Engine/Level/Tags.h"
 #include <ThirdParty/catch2/catch.hpp>
+#include <limits>
 
 TEST_CASE("Planet cloud defaults match the atmosphere")
 {
@@ -26,6 +27,31 @@ TEST_CASE("Planet cloud defaults match the atmosphere")
     CHECK(clouds->AtmosphereColorInfluence == 0.5f);
     CHECK(clouds->AtmosphereBrightnessInfluence == 1.0f);
     CHECK(clouds->CloudBrightness == 1.0f);
+    CHECK(clouds->RenderResolutionScale == 0.5f);
+}
+
+TEST_CASE("Planet cloud render resolution")
+{
+    auto* clouds = ScriptingObject::NewObject<PlanetVolumetricClouds>();
+    REQUIRE(clouds);
+    SCOPE_EXIT { clouds->DeleteObject(); };
+
+    CHECK(clouds->GetCloudRenderSize(1921, 1081) == Int2(961, 541));
+    clouds->RenderResolutionScale = 0.25f;
+    CHECK(clouds->GetCloudRenderSize(1921, 1081) == Int2(481, 271));
+    clouds->RenderResolutionScale = 1.0f;
+    CHECK(clouds->GetCloudRenderSize(1921, 1081) == Int2(1921, 1081));
+    clouds->RenderResolutionScale = 0.75f;
+    CHECK(clouds->GetCloudRenderSize(100, 100) == Int2(75, 75));
+    clouds->RenderResolutionScale = 0.0f;
+    CHECK(clouds->GetCloudRenderSize(1, 0) == Int2(1, 1));
+    CHECK(clouds->GetCloudRenderSize(100, 100) == Int2(25, 25));
+    clouds->RenderResolutionScale = 2.0f;
+    CHECK(clouds->GetCloudRenderSize(100, 100) == Int2(100, 100));
+    clouds->RenderResolutionScale = std::numeric_limits<float>::quiet_NaN();
+    CHECK(clouds->GetCloudRenderSize(100, 100) == Int2(50, 50));
+    clouds->RenderResolutionScale = std::numeric_limits<float>::infinity();
+    CHECK(clouds->GetCloudRenderSize(100, 100) == Int2(100, 100));
 }
 
 TEST_CASE("Radial exponential fog")

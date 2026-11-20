@@ -23,8 +23,8 @@
 #define SHADOWS_USE_CACHE 1
 #define SHADOWS_POSITION_ERROR METERS_TO_UNITS(0.1f)
 #define SHADOWS_ROTATION_ERROR 0.9999f
-#define SHADOWS_MAX_TILES 8
-#define SHADOWS_MIN_RESOLUTION 32
+#define SHADOWS_MAX_TILES 16
+#define SHADOWS_MIN_RESOLUTION 64
 #define SHADOWS_STATIC_ATLAS_MAX_CAPACITY_TO_DEFRAG 0.7f
 #define SHADOWS_STATIC_ATLAS_SCALE 2
 #define SHADOWS_BASE_LIGHT_RESOLUTION(atlasResolution) (atlasResolution / MAX_CSM_CASCADES) // Allow to store 4 CSM cascades in a single row in all cases
@@ -41,6 +41,8 @@ GPU_CB_STRUCT(Data {
     float ContactShadowsDistance;
     float ContactShadowsLength;
     });
+
+class ShadowsCustomBuffer;
 
 struct ShadowsAtlasRectTile : RectPackNode<uint16>
 {
@@ -74,6 +76,7 @@ struct ShadowAtlasLightTile
     ShadowsAtlasRectTile* StaticRectTile;
     const ShadowsAtlasRectTile* LinkedRectTile;
     Matrix WorldToShadow;
+    float DepthBiasScale;
     float FramesToUpdate; // Amount of frames (with fraction) until the next shadow update can happen
     bool SkipUpdate;
     mutable bool HasStaticGeometry;
@@ -1012,6 +1015,7 @@ void ShadowsPass::SetupLight(ShadowsCustomBuffer& shadows, RenderContext& render
     // Calculate cascade splits
     const float minDistance = renderContext.View.Near;
     const float maxDistance = renderContext.View.Near + atlasLight.Distance;
+    const float farEnd = Math::Min(renderContext.View.Far, light.FarShadowsDistance);
     const float viewRange = renderContext.View.Far - renderContext.View.Near;
     float cascadeSplits[SHADOWS_MAX_TILES] = {};
     {
@@ -1065,7 +1069,6 @@ void ShadowsPass::SetupLight(ShadowsCustomBuffer& shadows, RenderContext& render
         }
 
         const float farStart = cascadeSplits[nearCount - 1];
-        const float farEnd = Math::Min(renderContext.View.Far, light.FarShadowsDistance);
         for (int32 i = nearCount; i < csmCount; i++)
             cascadeSplits[i] = Math::Lerp(farStart, farEnd, static_cast<float>(i - nearCount + 1) / (csmCount - nearCount));
 
@@ -1157,7 +1160,8 @@ void ShadowsPass::SetupLight(ShadowsCustomBuffer& shadows, RenderContext& render
         {
             float overlapWithPrevSplit = blendDistance * (splitMinRatio - oldSplitMinRatio);
             const Float3 frustumRangeVS = frustumCornersVs[j + 4] - frustumCornersVs[j];
-            cascadeCornersVs[j] = frustumCornersVs[j] + frustumRangeVS * (splitMinRatio - overlapWithPrevSplit);
+            const float receiverStart = cascadeIndex >= nearCount ? 0.0f : splitMinRatio - overlapWithPrevSplit;
+            cascadeCornersVs[j] = frustumCornersVs[j] + frustumRangeVS * receiverStart;
             cascadeCornersVs[j + 4] = frustumCornersVs[j] + frustumRangeVS * splitMaxRatio;
         }
 
@@ -1198,13 +1202,15 @@ void ShadowsPass::SetupLight(ShadowsCustomBuffer& shadows, RenderContext& render
         Matrix::LookAt(frustumCenter + light.Direction * minExtents.Z, frustumCenter, up, shadowView);
 
         // Create viewport for culling with extended near/far planes due to culling issues (aka pancaking)
+        const float casterExtension = cascadeIndex >= nearCount ? Math::Max(0.0f, farEnd - frustumRadius) : 0.0f;
         const float cullRangeExtent = cascadeIndex >= nearCount ? Math::Max(METERS_TO_UNITS(1000.0f), frustumRadius) : METERS_TO_UNITS(1000.0f);
-        Matrix::OrthoOffCenter(minExtents.X, maxExtents.X, minExtents.Y, maxExtents.Y, -cullRangeExtent, cascadeExtents.Z + cullRangeExtent, shadowProjection);
+        Matrix::OrthoOffCenter(minExtents.X, maxExtents.X, minExtents.Y, maxExtents.Y, -Math::Max(cullRangeExtent, casterExtension), cascadeExtents.Z + cullRangeExtent, shadowProjection);
         Matrix::Multiply(shadowView, shadowProjection, cullingVP);
 
         // Create projection matrix
-        Matrix::OrthoOffCenter(minExtents.X, maxExtents.X, minExtents.Y, maxExtents.Y, 0.0f, cascadeExtents.Z, shadowProjection);
+        Matrix::OrthoOffCenter(minExtents.X, maxExtents.X, minExtents.Y, maxExtents.Y, -casterExtension, cascadeExtents.Z, shadowProjection);
         Matrix::Multiply(shadowView, shadowProjection, shadowVP);
+        tile.DepthBiasScale = cascadeExtents.Z / (cascadeExtents.Z + casterExtension);
 
         // Round the projection matrix by projecting the world-space origin and calculating the fractional offset in texel space of the shadow map
         Float4 shadowOrigin = Float4(0.0f, 0.0f, 0.0f, 1.0f);
@@ -1653,6 +1659,7 @@ RETRY_ATLAS_SETUP:
                     {
                         tile.LinkedRectTile = linkedTile.RectTile;
                         tile.WorldToShadow = linkedTile.WorldToShadow;
+                        tile.DepthBiasScale = linkedTile.DepthBiasScale;
                     }
                 }
             }
@@ -1692,7 +1699,8 @@ RETRY_ATLAS_SETUP:
         {
             // Shadow info
             auto* packed = shadows.ShadowsBuffer.WriteReserve<Float4>(3);
-            Color32 packed0x((byte)(atlasLight.Sharpness * (255.0f / 10.0f)), (byte)(atlasLight.Fade * 255.0f), (byte)atlasLight.TilesCount, (byte)(atlasLight.CascadeBlendSize * 255.0f));
+            const int32 nearCount = light->IsDirectionalLight ? Math::Min((int32)atlasLight.TilesCount, Math::Clamp(((RenderDirectionalLightData*)light)->CascadeCount, 1, MAX_CSM_CASCADES)) : 0;
+            Color32 packed0x((byte)(atlasLight.Sharpness * (255.0f / 10.0f)), (byte)(atlasLight.Fade * 255.0f), (byte)(atlasLight.TilesCount | (nearCount << 4)), (byte)(atlasLight.CascadeBlendSize * 255.0f));
             packed[0] = Float4(*(const float*)&packed0x, atlasLight.FadeDistance, atlasLight.NormalOffsetScale, atlasLight.Bias);
             packed[1] = atlasLight.CascadeSplits;
             packed[2] = atlasLight.FarCascadeSplits;
@@ -1703,13 +1711,14 @@ RETRY_ATLAS_SETUP:
             // Shadow projection info
             const ShadowAtlasLightTile& tile = atlasLight.Tiles[tileIndex];
             ASSERT(tile.RectTile);
-            auto* packed = shadows.ShadowsBuffer.WriteReserve<Float4>(5);
+            auto* packed = shadows.ShadowsBuffer.WriteReserve<Float4>(6);
             // UV to AtlasUV via a single MAD instruction
             packed[0] = Float4(tile.RectTile->Width - tileBorder * 2, tile.RectTile->Height - tileBorder * 2, tile.RectTile->X + tileBorder, tile.RectTile->Y + tileBorder) * atlasResolutionInv;
             packed[1] = tile.WorldToShadow.GetColumn1();
             packed[2] = tile.WorldToShadow.GetColumn2();
             packed[3] = tile.WorldToShadow.GetColumn3();
             packed[4] = tile.WorldToShadow.GetColumn4();
+            packed[5] = Float4(light->IsDirectionalLight ? tile.DepthBiasScale : 1.0f, 0.0f, 0.0f, 0.0f);
         }
     }
     GPUContext* context = GPUDevice::Instance->GetMainContext();

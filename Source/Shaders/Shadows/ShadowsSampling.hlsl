@@ -61,9 +61,9 @@ float2 GetLightShadowAtlasUV(ShadowData shadow, ShadowTileData shadowTile, float
     // Project into shadow space (WorldToShadow is pre-multiplied to convert Clip Space to UV Space)
     shadowPosition = mul(float4(samplePosition, 1.0f), shadowTile.WorldToShadow);
 #if REVERSE_Z
-    shadowPosition.z += shadow.Bias;
+    shadowPosition.z += shadow.Bias * shadowTile.DepthBiasScale;
 #else
-    shadowPosition.z -= shadow.Bias;
+    shadowPosition.z -= shadow.Bias * shadowTile.DepthBiasScale;
 #endif
     shadowPosition.xyz /= shadowPosition.w;
 
@@ -374,7 +374,7 @@ float SampleShadowMapPCSS(Texture2D<float> shadowMap, float2 shadowMapUV, float 
 #endif
 
 // Samples the shadow cascade for the given directional light on the material surface (supports subsurface shadowing)
-ShadowSample SampleDirectionalLightShadowCascade(LightData light, Buffer<float4> shadowsBuffer, Texture2D<float> shadowMap, GBufferSample gBuffer, ShadowData shadow, float3 samplePosition, uint cascadeIndex)
+ShadowSample SampleDirectionalLightShadowCascade(LightData light, Buffer<float4> shadowsBuffer, Texture2D<float> shadowMap, GBufferSample gBuffer, ShadowData shadow, float3 samplePosition, uint cascadeIndex, bool requireInside)
 {
     ShadowSample result;
     ShadowTileData shadowTile = LoadShadowsBufferTile(shadowsBuffer, light.ShadowsBufferAddress, cascadeIndex);
@@ -382,6 +382,12 @@ ShadowSample SampleDirectionalLightShadowCascade(LightData light, Buffer<float4>
     // Project position into shadow atlas UV
     float4 shadowPosition;
     float2 shadowMapUV = GetLightShadowAtlasUV(shadow, shadowTile, samplePosition, shadowPosition);
+    if (requireInside && (any(shadowPosition.xyz < 0.0f) || any(shadowPosition.xyz > 1.0f)))
+    {
+        result.SurfaceShadow = 1.0f;
+        result.TransmissionShadow = 1.0f;
+        return result;
+    }
 
     // Sample shadow map
 #if SHADOWS_PCSS
@@ -473,18 +479,27 @@ ShadowSample SampleDirectionalLightShadow(LightData light, Buffer<float4> shadow
     // Apply normal offset bias
     samplePosition += GetShadowPositionOffset(shadow.NormalOffsetScale, NoL, gBuffer.Normal);
 #endif
-    result = SampleDirectionalLightShadowCascade(light, shadowsBuffer, shadowMap, gBuffer, shadow, samplePosition, cascadeIndex);
+    result = SampleDirectionalLightShadowCascade(light, shadowsBuffer, shadowMap, gBuffer, shadow, samplePosition, cascadeIndex, false);
 
 #if SHADOWS_CSM_BLENDING
     if (shadow.CascadeBlendSize > 0.0f && splitDist <= shadow.CascadeBlendSize && cascadeIndex != shadow.TilesCount - 1)
     {
 	    // Sample the next cascade, and blend between the two results to smooth the transition
-        ShadowSample nextResult = SampleDirectionalLightShadowCascade(light, shadowsBuffer, shadowMap, gBuffer, shadow, samplePosition, cascadeIndex + 1);
+        ShadowSample nextResult = SampleDirectionalLightShadowCascade(light, shadowsBuffer, shadowMap, gBuffer, shadow, samplePosition, cascadeIndex + 1, false);
 		float blendAmount = splitDist / shadow.CascadeBlendSize;
 		result.SurfaceShadow = lerp(nextResult.SurfaceShadow, result.SurfaceShadow, blendAmount);
 		result.TransmissionShadow = lerp(nextResult.TransmissionShadow, result.TransmissionShadow, blendAmount);
     }
 #endif
+
+    for (uint farIndex = shadow.NearCascadeCount; farIndex < shadow.TilesCount; farIndex++)
+    {
+        if (viewDepth > GetCascadeSplit(shadow, farIndex))
+            continue;
+        ShadowSample farResult = SampleDirectionalLightShadowCascade(light, shadowsBuffer, shadowMap, gBuffer, shadow, samplePosition, farIndex, true);
+        result.SurfaceShadow = min(result.SurfaceShadow, farResult.SurfaceShadow);
+        result.TransmissionShadow = min(result.TransmissionShadow, farResult.TransmissionShadow);
+    }
 
 	result.SurfaceShadow = lerp(result.SurfaceShadow, 1, fade);
 	result.TransmissionShadow = lerp(result.TransmissionShadow, 1, fade);

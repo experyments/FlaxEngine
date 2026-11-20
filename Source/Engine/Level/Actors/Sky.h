@@ -3,6 +3,7 @@
 #pragma once
 
 #include "../Actor.h"
+#include "Engine/Core/Math/Int2.h"
 #include "Engine/Content/AssetReference.h"
 #include "Engine/Content/Assets/Shader.h"
 #include "Engine/Content/Assets/CubeTexture.h"
@@ -169,6 +170,13 @@ public:
     /// <summary>Strength of the additional cloud density in volumetric fog. Zero disables the contribution; the cloud raymarch remains unchanged.</summary>
     API_FIELD(Attributes="EditorOrder(140), DefaultValue(1.0f), Limit(0), EditorDisplay(\"Clouds\")")
     float VolumetricFogContribution = 1.0f;
+
+    /// <summary>Cloud raymarch resolution as a fraction of each view dimension. 0.25 is quarter, 0.5 is half, and 1 is full resolution. Changes apply at runtime.</summary>
+    API_FIELD(Attributes="EditorOrder(150), DefaultValue(0.5f), Limit(0.25f, 1.0f, 0.01f), EditorDisplay(\"Clouds\")")
+    float RenderResolutionScale = 0.5f;
+
+    /// <summary>Calculates the cloud raymarch target dimensions for the given view size.</summary>
+    Int2 GetCloudRenderSize(int32 width, int32 height) const;
 
 private:
 #if COMPILE_WITH_DEV_ENV

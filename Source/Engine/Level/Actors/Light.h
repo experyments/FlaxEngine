@@ -111,6 +111,8 @@ API_CLASS(Abstract) class FLAXENGINE_API LightWithShadow : public Light
         _1024 = 1024,
         // Shadow map of size 2048x2048.
         _2048 = 2048,
+        // Shadow map of size 4096x4096.
+        _4096 = 4096,
     };
 
 protected:

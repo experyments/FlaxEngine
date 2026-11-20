@@ -23,6 +23,7 @@ struct ShadowData
     float Bias;
     float CascadeBlendSize;
     uint TilesCount;
+    uint NearCascadeCount;
     float4 CascadeSplits;
     float4 FarCascadeSplits;
 };
@@ -32,6 +33,7 @@ struct ShadowTileData
 {
     float4 ShadowToAtlas;
     float4x4 WorldToShadow;
+    float DepthBiasScale;
 };
 
 // Loads the shadow data of the light in the shadow buffer
@@ -44,7 +46,8 @@ ShadowData LoadShadowsBuffer(Buffer<float4> shadowsBuffer, uint shadowsBufferAdd
     uint packed0x = asuint(vector0.x);
     shadow.Sharpness = (packed0x & 0x000000ff) * (10.0f / 255.0f);
     shadow.Fade = ((packed0x & 0x0000ff00) >> 8) * (1.0f / 255.0f);
-    shadow.TilesCount = ((packed0x & 0x00ff0000) >> 16);
+    shadow.TilesCount = ((packed0x & 0x000f0000) >> 16);
+    shadow.NearCascadeCount = ((packed0x & 0x00f00000) >> 20);
     shadow.CascadeBlendSize = ((packed0x & 0xff000000) >> 24) * (1.0f / 255.0f);
     shadow.FadeDistance = vector0.y;
     shadow.NormalOffsetScale = vector0.z;
@@ -65,13 +68,14 @@ float GetCascadeSplit(ShadowData shadow, uint cascadeIndex)
 ShadowTileData LoadShadowsBufferTile(Buffer<float4> shadowsBuffer, uint shadowsBufferAddress, uint tileIndex)
 {
     // This must match C++
-    shadowsBufferAddress += tileIndex * 5 + 3;
+    shadowsBufferAddress += tileIndex * 6 + 3;
     ShadowTileData tile;
     tile.ShadowToAtlas = shadowsBuffer.Load(shadowsBufferAddress + 0);
     tile.WorldToShadow[0] = shadowsBuffer.Load(shadowsBufferAddress + 1);
     tile.WorldToShadow[1] = shadowsBuffer.Load(shadowsBufferAddress + 2);
     tile.WorldToShadow[2] = shadowsBuffer.Load(shadowsBufferAddress + 3);
     tile.WorldToShadow[3] = shadowsBuffer.Load(shadowsBufferAddress + 4);
+    tile.DepthBiasScale = shadowsBuffer.Load(shadowsBufferAddress + 5).x;
     return tile;
 }
 
