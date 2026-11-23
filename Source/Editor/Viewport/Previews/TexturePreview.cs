@@ -21,6 +21,21 @@ namespace FlaxEditor.Viewport.Previews
         private float _viewScale = 1.0f;
         private bool _isMouseDown;
 
+        /// <summary>
+        /// True if enable displaying background and grid elements.
+        /// </summary>
+        public bool EnableBackground = false;
+
+        /// <summary>
+        /// Gets the last mouse position in a control.
+        /// </summary>
+        protected Float2 MouseLocation => _lastMousePos;
+
+        /// <summary>
+        /// The view scale.
+        /// </summary>
+        protected float ViewScale => _viewScale;
+
         /// <inheritdoc />
         protected TexturePreviewBase()
         {
@@ -89,7 +104,14 @@ namespace FlaxEditor.Viewport.Previews
         /// <inheritdoc />
         public override void Draw()
         {
-            Render2D.PushClip(new Rectangle(Float2.Zero, Size));
+            var rect = new Rectangle(Float2.Zero, Size);
+            Render2D.PushClip(rect);
+
+            // Draw background
+            if (EnableBackground)
+            {
+                Surface.VisjectSurface.DrawBackgroundDefault(Editor.Instance.UI.VisjectSurfaceBackground, Size, _viewPos);
+            }
 
             // Calculate texture view rectangle
             UpdateTextureRect();
@@ -98,12 +120,20 @@ namespace FlaxEditor.Viewport.Previews
             // Call drawing
             DrawTexture(ref textureRect);
 
-            // Add overlay during debugger breakpoint hang
-            if (Editor.Instance.Simulation.IsDuringBreakpointHang)
+            if (EnableBackground)
             {
-                var bounds = new Rectangle(Float2.Zero, Size);
-                Render2D.FillRectangle(bounds, new Color(0.0f, 0.0f, 0.0f, 0.2f));
-                Render2D.DrawText(Style.Current.FontLarge, "Debugger breakpoint hit...", bounds, Color.White, TextAlignment.Center, TextAlignment.Center);
+                var style = Style.Current;
+                if (Editor.Instance.Simulation.IsDuringBreakpointHang)
+                {
+                    // Add overlay during debugger breakpoint hang
+                    Render2D.FillRectangle(rect, new Color(0.0f, 0.0f, 0.0f, 0.2f));
+                    Render2D.DrawText(style.FontLarge, "Debugger breakpoint hit...", rect, style.Foreground, TextAlignment.Center, TextAlignment.Center);
+                }
+                if (ContainsFocus)
+                {
+                    // Draw border
+                    Render2D.DrawRectangle(new Rectangle(1, 1, rect.Width - 2, rect.Height - 2), Editor.IsPlayMode ? Color.OrangeRed : style.BackgroundSelected);
+                }
             }
 
             Render2D.PopClip();
@@ -123,17 +153,14 @@ namespace FlaxEditor.Viewport.Previews
         /// <inheritdoc />
         public override void OnMouseMove(Float2 location)
         {
-            // Check if mouse is down
             if (_isMouseDown)
             {
-                // Calculate mouse delta
-                var delta = location - _lastMousePos;
-
                 // Move view
+                var delta = location - _lastMousePos;
                 _viewPos += delta;
+                Cursor = CursorType.SizeAll;
             }
 
-            // Store mouse position
             _lastMousePos = location;
 
             base.OnMouseMove(location);
@@ -177,9 +204,14 @@ namespace FlaxEditor.Viewport.Previews
                 return true;
 
             // Set flag
-            _isMouseDown = true;
-            _lastMousePos = location;
-            Cursor = CursorType.SizeAll;
+            if (button == MouseButton.Right)
+            {
+                _isMouseDown = true;
+                _lastMousePos = location;
+                Cursor = CursorType.SizeAll;
+                Focus();
+                StartMouseCapture();
+            }
 
             return true;
         }
@@ -191,10 +223,29 @@ namespace FlaxEditor.Viewport.Previews
                 return true;
 
             // Clear flag
-            _isMouseDown = false;
-            Cursor = CursorType.Default;
+            if (_isMouseDown)
+            {
+                _isMouseDown = false;
+                Cursor = CursorType.Default;
+                EndMouseCapture();
+            }
 
             return true;
+        }
+
+        /// <inheritdoc />
+        public override bool OnKeyDown(KeyboardKeys key)
+        {
+            if (base.OnKeyDown(key))
+                return true;
+
+            switch (key)
+            {
+                case KeyboardKeys.F:
+                    CenterView();
+                    return true;
+            }
+            return false;
         }
 
         /// <inheritdoc />
