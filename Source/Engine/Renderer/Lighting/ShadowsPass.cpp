@@ -1420,16 +1420,16 @@ void ShadowsPass::SetupShadows(RenderContext& renderContext, RenderContextBatch&
     switch (Graphics::ShadowMapsQuality)
     {
     case Quality::Low:
-        atlasResolution = 1024;
+        atlasResolution = 1024 * 1;
         break;
     case Quality::Medium:
-        atlasResolution = 2048;
+        atlasResolution = 2048 * 1;
         break;
     case Quality::High:
-        atlasResolution = 4096;
+        atlasResolution = 4096 * 1;
         break;
     case Quality::Ultra:
-        atlasResolution = 8192;
+        atlasResolution = 8192 * 1;
         break;
     default:
         return;

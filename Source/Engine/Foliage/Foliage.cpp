@@ -218,8 +218,11 @@ void Foliage::DrawCluster(DrawContext& context, FoliageCluster* cluster, DrawCal
 
             // When instance is culled due to distance/size it needs to fade out (not pop out)
             bool culled = 
-                Float3::Distance(context.LodViewPosition, sphere.Center) - (float)sphere.Radius >= instance.CullDistance ||
-                RenderTools::ComputeBoundsScreenRadiusSquared(sphere.Center, (float)sphere.Radius, context.RenderContext.View) * context.ViewScreenSizeSq < context.MinObjectPixelSizeSq;
+                Float3::Distance(context.LodViewPosition, sphere.Center) - (float)sphere.Radius >= instance.CullDistance;
+                
+
+              //  Float3::Distance(context.LodViewPosition, sphere.Center) - (float)sphere.Radius >= instance.CullDistance ||
+              //  RenderTools::ComputeBoundsScreenRadiusSquared(sphere.Center, (float)sphere.Radius, context.RenderContext.View) * context.ViewScreenSizeSq < context.MinObjectPixelSizeSq;
 
             // Select a proper LOD index (model may be culled)
             int32 lodIndex = RenderTools::ComputeModelLOD(model, sphere.Center, (float)sphere.Radius, context.RenderContext);

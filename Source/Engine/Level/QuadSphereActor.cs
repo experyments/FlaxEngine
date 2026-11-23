@@ -1661,7 +1661,7 @@ public partial class QuadSphereActor : Actor
                 if (chunk.AttemptCount < 0)
                 {
                     double side = 2.0 / _chunksPerPatch;
-                    double expected = config.Density * (_radius / 1000.0) * (_radius / 1000.0) * side * side;
+                    double expected = config.Density * (_radius / 2000000.0) * (_radius / 2000000.0) * side * side;
                     if (!double.IsFinite(expected) || expected > int.MaxValue - 1)
                     {
                         Debug.LogWarning("Quad sphere prefab density produces too many attempts for a base chunk; reduce density or increase Chunks Per Patch.");
@@ -2149,10 +2149,9 @@ public partial class QuadSphereActor : Actor
     {
         for (int i = 0; i < renderer.FoliageTypesCount; i++)
         {
-            var type = renderer.GetFoliageType(i);
-            type.CullDistance = (float)Math.Min(FoliageEntrySpawnDistance(_foliageConfigs[entry]), float.MaxValue);
-            type.CullDistanceRandomRange = 0;
-            type.ShadowsMode = FoliageCastShadows ? ShadowsCastingMode.All : ShadowsCastingMode.None;
+            renderer.FoliageTypes[i].CullDistance = (float)Math.Min(FoliageEntrySpawnDistance(_foliageConfigs[entry]), float.MaxValue);
+            renderer.FoliageTypes[i].CullDistanceRandomRange = 0;
+            renderer.FoliageTypes[i].ShadowsMode = FoliageCastShadows ? ShadowsCastingMode.All : ShadowsCastingMode.None;
         }
         renderer.UpdateCullDistance();
     }

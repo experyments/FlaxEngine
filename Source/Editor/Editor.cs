@@ -26,9 +26,9 @@ using FlaxEngine.Json;
 using FlaxEngine.Utilities;
 
 #pragma warning disable CS1591
-
 namespace FlaxEditor
 {
+
     /// <summary>
     /// The main managed editor class. Editor root object.
     /// </summary>
