@@ -40,7 +40,7 @@ public class Engine : EngineModule
         options.PublicDependencies.Add("Visject");
         options.PublicDependencies.Add("Localization");
         options.PublicDependencies.Add("Online");
-
+        options.PrivateIncludePaths.Add(Path.Combine(FolderPath, "..", "..", "ThirdParty", "EnTT", "src"));
         options.ScriptingAPI.FileReferences.Add(
          Path.Combine(FolderPath, "..", "..", "ThirdParty", "EnttSharp.dll"));
         options.ScriptingAPI.FileReferences.Add(

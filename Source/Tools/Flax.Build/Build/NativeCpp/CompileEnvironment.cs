@@ -1,4 +1,4 @@
-// Copyright (c) Wojciech Figat. All rights reserved.
+﻿// Copyright (c) Wojciech Figat. All rights reserved.
 
 using System;
 using System.Collections.Generic;
@@ -143,7 +143,7 @@ namespace Flax.Build.NativeCpp
         /// <summary>
         /// C++ standard version to use for compilation.
         /// </summary>
-        public CppVersion CppVersion = CppVersion.Cpp14;
+        public CppVersion CppVersion = CppVersion.Cpp17;
 
         /// <summary>
         /// Selects a predefined set of options that affect the size and speed of generated code.

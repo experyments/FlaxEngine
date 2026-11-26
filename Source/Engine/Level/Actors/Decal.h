@@ -3,6 +3,7 @@
 #pragma once
 
 #include "../Actor.h"
+#include "entt/entt.hpp"
 #include "Engine/Core/Types/LayersMask.h"
 #include "Engine/Core/Math/Matrix.h"
 #include "Engine/Core/Math/OrientedBoundingBox.h"

@@ -117,11 +117,29 @@ public struct QuadSphereFoliageConfig
 [Flags]
 public enum QuadSpherePrefabBiomes
 {
+    /// <summary>
+    /// 
+    /// </summary>
     None = 0,
+    /// <summary>
+    /// 
+    /// </summary>
     Layer0 = 1,
+    /// <summary>
+    /// 
+    /// </summary>
     Layer1 = 2,
+    /// <summary>
+    /// 
+    /// </summary>
     Layer2 = 4,
+    /// <summary>
+    /// 
+    /// </summary>
     Layer3 = 8,
+    /// <summary>
+    /// 
+    /// </summary>
     Beach = 16,
     All = Layer0 | Layer1 | Layer2 | Layer3 | Beach,
 }
