@@ -40,9 +40,14 @@ public class Engine : EngineModule
         options.PublicDependencies.Add("Visject");
         options.PublicDependencies.Add("Localization");
         options.PublicDependencies.Add("Online");
+
         options.ScriptingAPI.FileReferences.Add(
          Path.Combine(FolderPath, "..", "..", "ThirdParty", "EnttSharp.dll"));
+        options.ScriptingAPI.FileReferences.Add(
+         Path.Combine(FolderPath, "..", "..", "ThirdParty", "Serilog.dll"));
         options.DependencyFiles.Add(Path.Combine(FolderPath, "..", "..", "ThirdParty", "EnttSharp.dll"));
+        options.DependencyFiles.Add(Path.Combine(FolderPath, "..", "..", "ThirdParty", "Serilog.dll"));
+
         // Use source folder per platform group
         switch (options.Platform.Target)
         {
