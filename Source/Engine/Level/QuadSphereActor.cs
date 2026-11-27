@@ -37,12 +37,40 @@ public struct QuadSphereBiomeLayer
     }
 }
 
+/// <summary>Shadow casting selection for a quad-sphere foliage entry.</summary>
+public enum QuadSphereFoliageShadows
+{
+    /// <summary>Use the legacy actor-wide shadow setting.</summary>
+    Legacy,
+    /// <summary>Cast shadows.</summary>
+    Enabled,
+    /// <summary>Do not cast shadows.</summary>
+    Disabled,
+}
+
+/// <summary>Noise used to modulate foliage density and scale.</summary>
+public enum QuadSphereFoliageNoiseType
+{
+    /// <summary>Smooth value noise.</summary>
+    Value,
+    /// <summary>Three-dimensional gradient Perlin noise.</summary>
+    Perlin,
+    /// <summary>Perlin noise folded into sharp ridges.</summary>
+    RidgedPerlin,
+}
+
 /// <summary>Deterministic instanced foliage placement settings.</summary>
 [Serializable]
 public struct QuadSphereFoliageConfig
 {
     /// <summary>Model rendered by the foliage instances.</summary>
     public Model Model;
+    /// <summary>Whether this foliage entry casts shadows.</summary>
+    [DefaultValue(QuadSphereFoliageShadows.Legacy), Tooltip("Shadow casting for this foliage entry. Legacy uses the old actor-wide setting; new planets default to casting shadows.")]
+    public QuadSphereFoliageShadows Shadows;
+    /// <summary>Align instances to the terrain normal instead of the planet's radial direction.</summary>
+    [DefaultValue(false), Tooltip("Align foliage to the ground normal. When disabled, foliage points away from the planet center. Rebuild terrain after changing.")]
+    public bool AlignToGroundNormal;
     /// <summary>Eligible material and beach layers.</summary>
     [DefaultValue(QuadSpherePrefabBiomes.All)]
     public QuadSpherePrefabBiomes Biomes;
@@ -52,6 +80,23 @@ public struct QuadSphereFoliageConfig
     /// <summary>Probability of accepting an eligible placement.</summary>
     [DefaultValue(1.0f), Limit(0, 1, 0.01f)]
     public float Probability;
+    /// <summary>Noise type used for both density and scale.</summary>
+    [DefaultValue(QuadSphereFoliageNoiseType.Value), Tooltip("Noise type for density and scale. Set a noise strength above zero to see its effect. Rebuild terrain after changing.")]
+    public QuadSphereFoliageNoiseType NoiseType;
+    /// <summary>Frequency of the foliage noise on the unit sphere.</summary>
+    [DefaultValue(4.0f), Limit(0, 4096), Tooltip("Noise frequency on the unit sphere. Higher values produce smaller patches. Rebuild terrain after changing.")]
+    public float NoiseFrequency;
+    /// <summary>Number of foliage noise octaves.</summary>
+    [DefaultValue(3), Limit(1, 8)]
+    public int NoiseOctaves;
+    /// <summary>Offset added to the planet seed for foliage noise.</summary>
+    public int NoiseSeedOffset;
+    /// <summary>Strength of noise modulation of placement probability.</summary>
+    [DefaultValue(0.0f), Limit(0, 1, 0.01f), Tooltip("Noise strength for foliage density. Zero disables density noise; one uses the full noise value to reduce placement probability.")]
+    public float NoiseDensityStrength;
+    /// <summary>Strength of noise modulation of instance scale.</summary>
+    [DefaultValue(0.0f), Limit(0, 1, 0.01f), Tooltip("Blend random scale toward the noise value within Min Scale and Max Scale. Zero keeps random scale; one uses noise alone.")]
+    public float NoiseScaleStrength;
     /// <summary>Minimum radial altitude; zero disables the limit.</summary>
     public double MinAltitude;
     /// <summary>Maximum radial altitude; zero disables the limit.</summary>
@@ -88,9 +133,17 @@ public struct QuadSphereFoliageConfig
     public QuadSphereFoliageConfig()
     {
         Model = null;
+        Shadows = QuadSphereFoliageShadows.Legacy;
+        AlignToGroundNormal = false;
         Biomes = QuadSpherePrefabBiomes.All;
         Density = 1.0f;
         Probability = 1.0f;
+        NoiseType = QuadSphereFoliageNoiseType.Value;
+        NoiseFrequency = 4.0f;
+        NoiseOctaves = 3;
+        NoiseSeedOffset = 0;
+        NoiseDensityStrength = 0;
+        NoiseScaleStrength = 0;
         MinAltitude = 0;
         MaxAltitude = double.MaxValue;
         MinSlope = 0;
@@ -107,6 +160,14 @@ public struct QuadSphereFoliageConfig
     [OnDeserializing]
     private void OnDeserializing(StreamingContext context)
     {
+        Shadows = QuadSphereFoliageShadows.Legacy;
+        AlignToGroundNormal = false;
+        NoiseType = QuadSphereFoliageNoiseType.Value;
+        NoiseFrequency = 4.0f;
+        NoiseOctaves = 3;
+        NoiseSeedOffset = 0;
+        NoiseDensityStrength = 0;
+        NoiseScaleStrength = 0;
         SpawnDistance = -1;
         CollisionDistance = -1;
         MaxColliders = -1;
@@ -300,8 +361,8 @@ public partial class QuadSphereActor : Actor
     public Texture Heightmap;
     /// <summary>Multiplier applied to the global heightmap's red channel.</summary>
     public float HeightmapHeight = 1000.0f;
-    /// <summary>Prefab placement entries. Rebuild terrain after changing these settings.</summary>
-    [Tooltip("Prefab placement entries. Rebuild terrain after changing these settings. Prefabs spawn in play mode only.")]
+    /// <summary>Prefab placement entries. Prefabs use base terrain and their brushes affect this planet. Rebuild after changing these settings.</summary>
+    [Tooltip("Prefabs spawn in play mode on the base terrain, before brushes and foliage. Brushes inside spawned prefabs automatically affect this planet. Rebuild terrain after changing these settings.")]
     public QuadSpherePrefabConfig[] PrefabConfigs = Array.Empty<QuadSpherePrefabConfig>();
     /// <summary>Maximum world-space distance from the main camera to spawned prefabs; zero disables spawning.</summary>
     [Tooltip("Maximum world-space distance from the main camera to spawned prefabs. Zero disables spawning; no prefabs spawn without a main camera.")]
@@ -312,8 +373,8 @@ public partial class QuadSphereActor : Actor
     /// <summary>Temporarily report prefab placement and cleanup diagnostics in play mode.</summary>
     [NoSerialize, Tooltip("Log prefab placement and cleanup diagnostics every five seconds in play mode. Turn off to stop logging.")]
     public bool PrefabDiagnostics = true;
-    /// <summary>Instanced foliage entries. Rebuild terrain after changing these settings.</summary>
-    [Tooltip("Instanced foliage entries. Rebuild terrain after changing. Optional box collision is enabled per entry.")]
+    /// <summary>Instanced foliage entries placed on committed terrain patches. Rebuild terrain after changing these settings.</summary>
+    [Tooltip("Instanced foliage entries placed on the committed terrain mesh, including brushes. Placements refresh when their terrain LOD changes. Rebuild terrain after changing. Optional box collision is enabled per entry.")]
     public QuadSphereFoliageConfig[] FoliageConfigs = Array.Empty<QuadSphereFoliageConfig>();
     /// <summary>Legacy default foliage streaming distance.</summary>
     [HideInEditor]
@@ -325,10 +386,10 @@ public partial class QuadSphereActor : Actor
     [Limit(1, 4096), Tooltip("Maximum streamed foliage entry/cell pairs. The closest are prioritized when the limit is reached.")]
     public int MaxFoliageCells = 512;
     /// <summary>Maximum deterministic foliage placement attempts per update.</summary>
-    [Limit(1, 100000)]
+    [Limit(1, 100000), Tooltip("Maximum foliage placement attempts per update. Lower values reduce per-frame work but slow streaming.")]
     public int FoliageAttemptsPerUpdate = 1024;
-    /// <summary>Whether foliage instances cast shadows.</summary>
-    [Tooltip("Whether instanced foliage casts shadows. Disable for lower rendering cost.")]
+    /// <summary>Legacy default foliage shadow setting.</summary>
+    [HideInEditor]
     public bool FoliageCastShadows = true;
     /// <summary>Legacy default foliage collision distance.</summary>
     [HideInEditor]
@@ -338,6 +399,8 @@ public partial class QuadSphereActor : Actor
     public int MaxFoliageColliders = 64;
     private readonly Dictionary<(int Face, int Level, int X, int Y), Patch> _patches = new();
     private readonly Dictionary<int, PrefabChunk> _prefabChunks = new();
+    private readonly HashSet<Guid> _spawnedPrefabRoots = new();
+    private readonly HashSet<Guid> _invalidBrushBiomes = new();
     private readonly Dictionary<(int Cell, int Entry), FoliageCell> _foliageCells = new();
     private readonly List<(int Cell, int Entry)> _foliageCellOrder = new();
     private readonly List<BoxCollider> _foliageColliderPool = new();
@@ -351,6 +414,9 @@ public partial class QuadSphereActor : Actor
     private bool _foliageCastShadows;
     private QuadSpherePrefabConfig[] _prefabConfigs = Array.Empty<QuadSpherePrefabConfig>();
     private TerrainSnapshot _prefabSnapshot;
+    private TerrainSnapshot _foliageSnapshot;
+    private bool _prefabBrushesDirty;
+    private bool _foliageSurfaceErrorLogged;
     private float _prefabDiagnosticElapsed = 5.0f;
     private PrefabDiagnosticCounts _prefabDiagnosticCounts;
     private readonly List<Patch> _retired = new();
@@ -436,6 +502,12 @@ public partial class QuadSphereActor : Actor
         public double Distance;
     }
 
+    private struct FoliageSearchRegion
+    {
+        public int Face, Entry, MinX, MaxX, MinY, MaxY;
+        public double MaxDistance;
+    }
+
     private sealed class PatchGeometry
     {
         public (int Face, int Level, int X, int Y) Key;
@@ -450,6 +522,8 @@ public partial class QuadSphereActor : Actor
     {
         public StaticModel Renderer;
         public MeshCollider Collider;
+        public Double3 Origin;
+        public Float3[] Vertices;
         public Model Model;
         public CollisionData Collision;
         public Task<bool> Cooking;
@@ -467,7 +541,9 @@ public partial class QuadSphereActor : Actor
     {
         public Vector3 Surface;
         public int Entry;
+        public float Yaw;
         public Actor Actor;
+        public Guid ActorId;
         // Avoid retrying a failed spawn or an externally destroyed actor until re-entry.
         public bool SpawnAttempted;
     }
@@ -501,12 +577,19 @@ public partial class QuadSphereActor : Actor
         }
     }
 
+    private struct BrushInfluence
+    {
+        public BrushData Brush;
+        public Transform PlanetTransform;
+    }
+
     private sealed class BrushData
     {
         public Guid Id;
         public int Order;
         public QuadSphereBrushMode Mode;
         public QuadSphereBrushShape Shape;
+        public QuadSphereBrushBiome BiomeOverride;
         public Vector3 Position, AxisX, AxisY, AxisNormal;
         public float Radius, Falloff, Depth;
         public double FlattenHeight;
@@ -594,6 +677,7 @@ public partial class QuadSphereActor : Actor
         if (PrefabDiagnostics)
             Debug.Log($"Quad sphere prefab diagnostics [{Name}]: end-play cleanup scheduled destruction of {_prefabDiagnosticCounts.Destroyed - destroyedBefore} prefab actors.");
         _brushes = Array.Empty<BrushData>();
+        _invalidBrushBiomes.Clear();
         base.OnEndPlay();
     }
 
@@ -662,15 +746,24 @@ public partial class QuadSphereActor : Actor
         if (!_simpleSphere && Heightmap != null && !TryReadImage(Heightmap, out _heightmap))
             return;
 
-        _baseElevationBound = 2.0 * Math.Abs(_noiseHeight) + Math.Abs(_heightmapHeight) * MaxAbsRed(_heightmap);
+        _baseElevationBound = 2.0 * Math.Abs(_noiseHeight) + Math.Abs(_heightmapHeight) * MaxAbsRed(_heightmap) + _beachWidth * _beachSmoothing;
         _brushTransform = Transform;
-        _brushes = _simpleSphere ? Array.Empty<BrushData>() : CollectBrushes(_brushTransform);
+        _brushes = _simpleSphere || Engine.IsPlayMode ? Array.Empty<BrushData>() : CollectBrushes(_brushTransform);
         _failedBrushes = null;
         _brushCheckElapsed = 0;
+        _prefabBrushesDirty = true;
+        _foliageSurfaceErrorLogged = false;
         _prefabConfigs = PrefabConfigs != null ? (QuadSpherePrefabConfig[])PrefabConfigs.Clone() : Array.Empty<QuadSpherePrefabConfig>();
         _foliageConfigs = FoliageConfigs != null ? (QuadSphereFoliageConfig[])FoliageConfigs.Clone() : Array.Empty<QuadSphereFoliageConfig>();
+        for (int i = 0; i < _foliageConfigs.Length; i++)
+        {
+            if (!ValidFoliageNoise(_foliageConfigs[i]))
+                Debug.LogWarning($"Quad sphere foliage entry {i} has invalid noise settings; the noise type must be supported, frequency finite and nonnegative, and strengths finite. The entry will not be streamed.");
+        }
         _foliageDivisions = Math.Clamp(FoliageCellsPerFace, 1, 1024);
         _prefabSnapshot = CreateTerrainSnapshot();
+        _prefabSnapshot.Brushes = Array.Empty<BrushData>();
+        _foliageSnapshot = CreateTerrainSnapshot();
         InitializeCullBounds();
         _ready = true;
         RefreshLod();
@@ -699,9 +792,9 @@ public partial class QuadSphereActor : Actor
         double innerExtent = Math.Max(0.01, _radius - _baseElevationBound) * minScale;
         foreach (var brush in Level.GetActors<QuadSphereBrush>(true))
         {
-            if (brush == null || !brush.TargetsActor(this) || !float.IsFinite(brush.Radius) || brush.Radius <= 0 ||
+            if (brush == null || (!brush.TargetsActor(this) && !IsSpawnedPrefabBrush(brush)) || !float.IsFinite(brush.Radius) || brush.Radius <= 0 ||
                 !float.IsFinite(brush.Falloff) || !float.IsFinite(brush.Depth) ||
-                (brush.Mode != QuadSphereBrushMode.Carve && brush.Mode != QuadSphereBrushMode.Flatten) ||
+                (brush.Mode != QuadSphereBrushMode.Carve && brush.Mode != QuadSphereBrushMode.Flatten && brush.Mode != QuadSphereBrushMode.None) ||
                 (brush.Shape != QuadSphereBrushShape.Circle && brush.Shape != QuadSphereBrushShape.Square))
                 continue;
             var position = brush.Position;
@@ -718,8 +811,17 @@ public partial class QuadSphereActor : Actor
             double flattenHeight = brush.Mode == QuadSphereBrushMode.Flatten ? BrushFlattenHeight(position, planetTransform, _radius) : 0.0;
             if (!double.IsFinite(flattenHeight))
                 continue;
+            var biomeOverride = brush.BiomeOverride;
+            if ((int)biomeOverride < (int)QuadSphereBrushBiome.None || (int)biomeOverride > (int)QuadSphereBrushBiome.Beach)
+            {
+                if (_invalidBrushBiomes.Add(brush.ID))
+                    Debug.LogWarning($"Quad sphere brush {brush.Name} has an invalid biome override; its biome override is ignored.");
+                biomeOverride = QuadSphereBrushBiome.None;
+            }
+            else
+                _invalidBrushBiomes.Remove(brush.ID);
             var data = new BrushData { Id = brush.ID, Order = brush.Order, Mode = brush.Mode, Shape = brush.Shape, Position = position,
-                Radius = brush.Radius, Falloff = Math.Clamp(brush.Falloff, 0.0f, 1.0f),
+                BiomeOverride = biomeOverride, Radius = brush.Radius, Falloff = Math.Clamp(brush.Falloff, 0.0f, 1.0f),
                 Depth = Math.Max(0.0f, brush.Depth), FlattenHeight = flattenHeight };
             if (brush.Shape == QuadSphereBrushShape.Square)
             {
@@ -739,6 +841,18 @@ public partial class QuadSphereActor : Actor
         return result.ToArray();
     }
 
+    private bool IsSpawnedPrefabBrush(QuadSphereBrush brush)
+    {
+        for (Actor actor = brush; actor != null && actor != this; actor = actor.Parent)
+        {
+            if (actor is QuadSphereActor)
+                break;
+            if (_spawnedPrefabRoots.Contains(actor.ID))
+                return true;
+        }
+        return false;
+    }
+
     private static double BrushFlattenHeight(Vector3 position, Transform planetTransform, double radius) =>
         planetTransform.WorldToLocal(position).Length - radius;
 
@@ -748,22 +862,74 @@ public partial class QuadSphereActor : Actor
             return false;
         for (int i = 0; i < a.Length; i++)
         {
-            var x = a[i];
-            var y = b[i];
-            if (x.Id != y.Id || x.Order != y.Order || x.Mode != y.Mode || x.Shape != y.Shape || !x.Position.Equals(y.Position) ||
-                !x.AxisX.Equals(y.AxisX) || !x.AxisY.Equals(y.AxisY) || !x.AxisNormal.Equals(y.AxisNormal) ||
-                x.Radius != y.Radius || x.Falloff != y.Falloff || x.Depth != y.Depth || x.FlattenHeight != y.FlattenHeight)
+            if (!SameBrush(a[i], b[i]))
                 return false;
         }
         return true;
     }
 
+    private static bool SameBrush(BrushData x, BrushData y) =>
+        x.Id == y.Id && x.Order == y.Order && x.Mode == y.Mode && x.Shape == y.Shape && x.BiomeOverride == y.BiomeOverride && x.Position.Equals(y.Position) &&
+        x.AxisX.Equals(y.AxisX) && x.AxisY.Equals(y.AxisY) && x.AxisNormal.Equals(y.AxisNormal) &&
+        x.Radius == y.Radius && x.Falloff == y.Falloff && x.Depth == y.Depth && x.FlattenHeight == y.FlattenHeight;
+
+    private static List<BrushInfluence> ChangedBrushInfluences(BrushData[] oldBrushes, Transform oldTransform, BrushData[] newBrushes, Transform newTransform)
+    {
+        var result = new List<BrushInfluence>();
+        var oldById = new Dictionary<Guid, BrushData>();
+        var newById = new Dictionary<Guid, BrushData>();
+        foreach (var brush in oldBrushes)
+            oldById.Add(brush.Id, brush);
+        foreach (var brush in newBrushes)
+            newById.Add(brush.Id, brush);
+        bool movedPlanet = !oldTransform.Equals(newTransform);
+        foreach (var brush in oldBrushes)
+            if (movedPlanet || !newById.TryGetValue(brush.Id, out var updated) || !SameBrush(brush, updated))
+                result.Add(new BrushInfluence { Brush = brush, PlanetTransform = oldTransform });
+        foreach (var brush in newBrushes)
+            if (movedPlanet || !oldById.TryGetValue(brush.Id, out var previous) || !SameBrush(brush, previous))
+                result.Add(new BrushInfluence { Brush = brush, PlanetTransform = newTransform });
+        return result;
+    }
+
+    private bool BrushInfluencesRegion(int face, int x, int y, int divisions, List<BrushInfluence> influences)
+    {
+        double u = -1.0 + 2.0 * (x + 0.5) / divisions;
+        double v = -1.0 + 2.0 * (y + 0.5) / divisions;
+        var center = (Vector3)(Direction(face, u, v) * _radius);
+        // Include normal samples just outside the patch/cell and float transform rounding.
+        double localRadius = _baseElevationBound + 0.01 + (_radius + _baseElevationBound + 0.01) * (Math.Sqrt(2.0) / divisions + 0.00021);
+        foreach (var influence in influences)
+        {
+            var transform = influence.PlanetTransform;
+            double scale = Math.Max(Math.Abs(transform.Scale.X), Math.Max(Math.Abs(transform.Scale.Y), Math.Abs(transform.Scale.Z)));
+            var worldCenter = transform.LocalToWorld(center);
+            double distance = (worldCenter - influence.Brush.Position).Length;
+            double brushRadius = influence.Brush.Radius * (influence.Brush.Shape == QuadSphereBrushShape.Square ? Math.Sqrt(3.0) : 1.0);
+            double padding = (worldCenter.Length + influence.Brush.Position.Length + localRadius * scale + 1.0) * 0.00001;
+            double bound = localRadius * scale + brushRadius + padding;
+            if (!double.IsFinite(distance) || !double.IsFinite(bound) || distance <= bound)
+                return true;
+        }
+        return false;
+    }
+
     private void RebuildForBrushes(BrushData[] brushes, Transform planetTransform)
     {
-        // Keep the committed terrain and collision until the replacement is ready.
+        var changedBrushInfluences = ChangedBrushInfluences(_brushes, _brushTransform, brushes, planetTransform);
+        var affected = new List<(int Face, int Level, int X, int Y)>();
         foreach (var pair in _patches)
-            _previousBrushPatches.Add(pair.Key, pair.Value);
-        _patches.Clear();
+        {
+            var key = pair.Key;
+            if (BrushInfluencesRegion(key.Face, key.X, key.Y, _chunksPerPatch << key.Level, changedBrushInfluences))
+                affected.Add(key);
+        }
+        // Keep old affected patches visible until all replacements are ready.
+        foreach (var key in affected)
+        {
+            _previousBrushPatches.Add(key, _patches[key]);
+            _patches.Remove(key);
+        }
         _previousBrushes = _brushes;
         _previousBrushTransform = _brushTransform;
         _hasCompletedLod = false;
@@ -772,17 +938,27 @@ public partial class QuadSphereActor : Actor
         _failedBrushes = null;
         _previousCullRadius = _cullRadius;
         InitializeCullBounds();
-        RefreshLod();
+        _desired = new HashSet<(int Face, int Level, int X, int Y)>(_patches.Keys);
+        _desired.UnionWith(affected);
+        _pendingKeys = affected;
+        _pendingIndex = 0;
+        _snapshot = CreateTerrainSnapshot();
+        _generationCancellation = new CancellationTokenSource();
+        AdvanceGeneration();
     }
 
     private void RestoreBrushPatches()
     {
         // A failed replacement must not remove the last usable terrain/collision.
-        foreach (var patch in _patches.Values)
-            DestroyPatch(patch);
-        _patches.Clear();
         foreach (var pair in _previousBrushPatches)
+        {
+            if (_patches.TryGetValue(pair.Key, out var replacement))
+            {
+                DestroyPatch(replacement);
+                _patches.Remove(pair.Key);
+            }
             _patches.Add(pair.Key, pair.Value);
+        }
         _previousBrushPatches.Clear();
         _failedBrushes = _brushes;
         _failedBrushTransform = _brushTransform;
@@ -823,15 +999,19 @@ public partial class QuadSphereActor : Actor
                 SetPatchShadows(patch.Renderer, _castShadows);
         }
         UpdatePatchVisibility();
+        bool committedLod = false;
         if (_hasCompletedLod && _previousBrushes == null)
         {
-            UpdatePrefabs();
-            UpdateFoliage();
+            bool prefabsPending = UpdatePrefabs();
+            if (!prefabsPending && _desired == null)
+            {
+                if (UpdateBrushLayer())
+                    return;
+                UpdateFoliage();
+            }
         }
         else if (_prefabChunks.Count != 0)
             CleanupPrefabDistances();
-        if (_previousBrushes != null)
-            DisableFoliageColliders();
         if (_desired != null && !AdvanceGeneration())
             return;
         bool cooking = false;
@@ -854,8 +1034,9 @@ public partial class QuadSphereActor : Actor
             return;
         if (_previousBrushes != null)
         {
-            foreach (var patch in _patches.Values)
+            foreach (var key in _previousBrushPatches.Keys)
             {
+                var patch = _patches[key];
                 if (patch.Cooking != null && (patch.Cooking.IsFaulted || patch.Cooking.IsCanceled || patch.Cooking.Result))
                 {
                     RestoreBrushPatches();
@@ -865,12 +1046,16 @@ public partial class QuadSphereActor : Actor
         }
         if (_desired != null)
         {
-            if (_previousBrushes != null)
+            if (_foliageCells.Count != 0)
             {
-                ClearPrefabs();
-                ClearFoliage();
-                _prefabSnapshot = CreateTerrainSnapshot();
+                var changedPatches = new HashSet<(int Face, int Level, int X, int Y)>(_previousBrushPatches.Keys);
+                foreach (var pair in _patches)
+                    if (!pair.Value.Committed || !_desired.Contains(pair.Key))
+                        changedPatches.Add(pair.Key);
+                InvalidateFoliageForPatches(changedPatches);
             }
+            if (_previousBrushes != null)
+                _foliageSnapshot = CreateTerrainSnapshot();
             foreach (var patch in _previousBrushPatches.Values)
             {
                 patch.Renderer.IsActive = false;
@@ -901,6 +1086,7 @@ public partial class QuadSphereActor : Actor
             foreach (var key in remove)
                 _patches.Remove(key);
             _hasCompletedLod = true;
+            committedLod = true;
             _desired = null;
             _pendingKeys = null;
             _snapshot = null;
@@ -911,27 +1097,34 @@ public partial class QuadSphereActor : Actor
         foreach (var patch in _retired)
             DestroyPatch(patch);
         _retired.Clear();
-        _brushCheckElapsed += Time.UnscaledDeltaTime;
-        if (!_simpleSphere && _hasCompletedLod && _brushCheckElapsed >= 0.25f)
-        {
-            _brushCheckElapsed = 0;
-            var planetTransform = Transform;
-            var brushes = CollectBrushes(planetTransform);
-            bool failedAttempt = _failedBrushes != null && SameBrushes(_failedBrushes, brushes) &&
-                _failedBrushTransform.Equals(planetTransform);
-            if (!failedAttempt && (!SameBrushes(_brushes, brushes) ||
-                ((brushes.Length != 0 || _brushes.Length != 0) && !_brushTransform.Equals(planetTransform))))
-            {
-                RebuildForBrushes(brushes, planetTransform);
-                return;
-            }
-        }
         _elapsed += Engine.IsPlayMode ? Time.DeltaTime : Time.UnscaledDeltaTime;
-        if (_elapsed >= Math.Max(0.05f, LodUpdateInterval))
+        if (!committedLod && _elapsed >= Math.Max(0.05f, LodUpdateInterval))
         {
             _elapsed = 0;
             RefreshLod();
         }
+    }
+
+    private bool UpdateBrushLayer()
+    {
+        if (_simpleSphere)
+            return false;
+        _brushCheckElapsed += Time.UnscaledDeltaTime;
+        if (!_prefabBrushesDirty && _brushCheckElapsed < 0.25f)
+            return false;
+        _prefabBrushesDirty = false;
+        _brushCheckElapsed = 0;
+        var planetTransform = Transform;
+        var brushes = CollectBrushes(planetTransform);
+        bool failedAttempt = _failedBrushes != null && SameBrushes(_failedBrushes, brushes) &&
+            _failedBrushTransform.Equals(planetTransform);
+        if (!failedAttempt && (!SameBrushes(_brushes, brushes) ||
+            ((brushes.Length != 0 || _brushes.Length != 0) && !_brushTransform.Equals(planetTransform))))
+        {
+            RebuildForBrushes(brushes, planetTransform);
+            return true;
+        }
+        return false;
     }
 
     private void UpdatePatchVisibility()
@@ -1005,9 +1198,13 @@ public partial class QuadSphereActor : Actor
         // of the current bound and the target height's magnitude.
         double displacement = _baseElevationBound;
         foreach (var brush in _brushes)
-            displacement = brush.Mode == QuadSphereBrushMode.Carve
-                ? displacement + brush.Depth : Math.Max(displacement, Math.Abs(brush.FlattenHeight));
-        displacement += _beachWidth * _beachSmoothing + _skirtDepth + 0.01;
+        {
+            if (brush.Mode == QuadSphereBrushMode.Carve)
+                displacement += brush.Depth;
+            else if (brush.Mode == QuadSphereBrushMode.Flatten)
+                displacement = Math.Max(displacement, Math.Abs(brush.FlattenHeight));
+        }
+        displacement += _skirtDepth + 0.01;
         // Normalizing (face, u, v) is at most 1-Lipschitz because its length is
         // at least one. The furthest point in the root square is sqrt(2)/N away.
         // The small padding covers float mesh vertices and direction rounding.
@@ -1210,10 +1407,12 @@ public partial class QuadSphereActor : Actor
                 double height = BaseElevation(direction, settings);
                 double beach = GetBeachWeight(height, settings);
                 height = FlattenBeach(height, beach, settings);
+                var biome = ApplyBrushBiomes(direction, height, ApplyBeachWeight(GetBiomeWeights(direction, settings), beach), settings, out _);
+                height = BrushElevation(direction, height, settings);
                 vertices.Add(direction * Math.Max(0.01, settings.Radius + height) - origin);
                 normals.Add(normal);
                 tangents.Add(SurfaceTangent(direction, normal, uAxis));
-                biomeWeights.Add(ApplyBeachWeight(GetBiomeWeights(direction, settings), beach));
+                biomeWeights.Add(biome);
                 // Every LOD shares the base chunk grid modulo the selected repeat period.
                 uvs.Add(new Float2((float)(uvStartX + x / (double)patchesPerChunk - uvOffsetX),
                     (float)(uvStartY + y / (double)patchesPerChunk - uvOffsetY)));
@@ -1310,7 +1509,7 @@ public partial class QuadSphereActor : Actor
             SetPatchShadows(renderer, false);
 
         if (!Engine.IsPlayMode || !_generateCollision)
-            return new Patch { Renderer = renderer, Model = model, CollisionAssigned = true };
+            return new Patch { Renderer = renderer, Model = model, Origin = (Double3)renderer.LocalPosition, Vertices = _foliageConfigs.Length != 0 ? vertexArray : null, CollisionAssigned = true };
 
         var collider = new MeshCollider { HideFlags = HideFlags.FullyHidden };
         collider.SetParent(this, false, false);
@@ -1319,7 +1518,7 @@ public partial class QuadSphereActor : Actor
         if (collision == null)
             throw new InvalidOperationException("Failed to create planet collision data.");
         var cooking = Task.Run(() => collision.CookCollision(CollisionDataType.TriangleMesh, vertexArray, indexArray));
-        return new Patch { Renderer = renderer, Collider = collider, Model = model, Collision = collision, Cooking = cooking };
+        return new Patch { Renderer = renderer, Collider = collider, Model = model, Origin = (Double3)renderer.LocalPosition, Vertices = _foliageConfigs.Length != 0 ? vertexArray : null, Collision = collision, Cooking = cooking };
     }
 
     private static void SetPatchShadows(StaticModel renderer, bool castShadows)
@@ -1378,7 +1577,8 @@ public partial class QuadSphereActor : Actor
     private static double Elevation(Double3 direction, TerrainSnapshot settings)
     {
         double height = BaseElevation(direction, settings);
-        return FlattenBeach(height, GetBeachWeight(height, settings), settings);
+        height = FlattenBeach(height, GetBeachWeight(height, settings), settings);
+        return BrushElevation(direction, height, settings);
     }
 
     private static double BaseElevation(Double3 direction, TerrainSnapshot settings)
@@ -1400,7 +1600,12 @@ public partial class QuadSphereActor : Actor
             float v = (float)(0.5 - Math.Asin(Math.Clamp(direction.Y, -1.0f, 1.0f)) / Math.PI);
             height += settings.Heightmap.Sample(u, v, true) * settings.HeightmapHeight;
         }
-        if (settings.Brushes.Length == 0)
+        return height;
+    }
+
+    private static double BrushElevation(Double3 direction, double height, TerrainSnapshot settings)
+    {
+        if (settings.SimpleSphere || settings.Brushes.Length == 0)
             return height;
 
         // Use the unbrushed surface for every mask so overlapping brushes have
@@ -1409,21 +1614,67 @@ public partial class QuadSphereActor : Actor
         Vector3 worldPosition = settings.PlanetTransform.LocalToWorld(localPosition);
         foreach (var brush in settings.Brushes)
         {
-            var offset = worldPosition - brush.Position;
-            double distance = brush.Shape == QuadSphereBrushShape.Square
-                ? Math.Max(Math.Abs(Vector3.Dot(offset, brush.AxisNormal)),
-                    Math.Max(Math.Abs(Vector3.Dot(offset, brush.AxisX)), Math.Abs(Vector3.Dot(offset, brush.AxisY))))
-                : offset.Length;
-            if (distance >= brush.Radius)
-                continue;
-            double weight = brush.Falloff <= 0 ? 1.0 : Math.Clamp((brush.Radius - distance) / (brush.Radius * brush.Falloff), 0.0, 1.0);
-            weight = weight * weight * (3.0 - 2.0 * weight);
+            double weight = BrushWeight(worldPosition, brush);
             if (brush.Mode == QuadSphereBrushMode.Carve)
                 height -= brush.Depth * weight;
-            else
+            else if (brush.Mode == QuadSphereBrushMode.Flatten)
                 height += (brush.FlattenHeight - height) * weight;
         }
         return height;
+    }
+
+    private static double BrushWeight(Vector3 worldPosition, BrushData brush)
+    {
+        var offset = worldPosition - brush.Position;
+        double distance = brush.Shape == QuadSphereBrushShape.Square
+            ? Math.Max(Math.Abs(Vector3.Dot(offset, brush.AxisNormal)),
+                Math.Max(Math.Abs(Vector3.Dot(offset, brush.AxisX)), Math.Abs(Vector3.Dot(offset, brush.AxisY))))
+            : offset.Length;
+        if (distance >= brush.Radius)
+            return 0;
+        double weight = brush.Falloff <= 0 ? 1.0 : Math.Clamp((brush.Radius - distance) / (brush.Radius * brush.Falloff), 0.0, 1.0);
+        return weight * weight * (3.0 - 2.0 * weight);
+    }
+
+    private static Color32 ApplyBrushBiomes(Double3 direction, double baseHeight, Color32 biome, TerrainSnapshot settings, out bool applied)
+    {
+        applied = false;
+        if (settings.SimpleSphere || settings.Brushes.Length == 0)
+            return biome;
+        var worldPosition = settings.PlanetTransform.LocalToWorld((Vector3)(direction * Math.Max(0.01, settings.Radius + baseHeight)));
+        Span<double> weights = stackalloc double[5] { biome.R, biome.G, biome.B, biome.A, 255 - biome.R - biome.G - biome.B - biome.A };
+        foreach (var brush in settings.Brushes)
+        {
+            int target = (int)brush.BiomeOverride - 1;
+            if (target < 0 || target > 4)
+                continue;
+            double weight = BrushWeight(worldPosition, brush);
+            if (weight <= 0)
+                continue;
+            applied = true;
+            for (int i = 0; i < 5; i++)
+                weights[i] = weights[i] * (1.0 - weight) + (i == target ? 255.0 * weight : 0.0);
+        }
+        if (!applied)
+            return biome;
+        Span<byte> quantized = stackalloc byte[5];
+        int remaining = 255;
+        for (int i = 0; i < 5; i++)
+        {
+            quantized[i] = (byte)Math.Clamp((int)Math.Floor(weights[i]), 0, 255);
+            remaining -= quantized[i];
+            weights[i] -= quantized[i];
+        }
+        while (remaining-- > 0)
+        {
+            int best = 0;
+            for (int i = 1; i < 5; i++)
+                if (weights[i] > weights[best])
+                    best = i;
+            quantized[best]++;
+            weights[best] = -1;
+        }
+        return new Color32(quantized[0], quantized[1], quantized[2], quantized[3]);
     }
 
     private static double GetBeachWeight(double height, TerrainSnapshot settings)
@@ -1620,13 +1871,13 @@ public partial class QuadSphereActor : Actor
         Debug.Log(text.ToString());
     }
 
-    private void UpdatePrefabs()
+    private bool UpdatePrefabs()
     {
         if (!Engine.IsPlayMode || _prefabSnapshot == null || _prefabConfigs.Length == 0 ||
             !double.IsFinite(PrefabSpawnDistance) || PrefabSpawnDistance <= 0 || !TryGetPrefabCameraPosition(out var target))
         {
             ClearPrefabs();
-            return;
+            return false;
         }
 
         // Cleanup is not budgeted: actors must not remain out of range while
@@ -1639,7 +1890,7 @@ public partial class QuadSphereActor : Actor
         if (!double.IsFinite(bounds))
         {
             ClearPrefabs();
-            return;
+            return false;
         }
 
         for (int root = 0; root < _cullCenters.Length; root++)
@@ -1717,13 +1968,33 @@ public partial class QuadSphereActor : Actor
                 if (config.Prefab == null || !config.Prefab.IsLoaded || config.Prefab.LastLoadFailed)
                     continue;
                 candidate.SpawnAttempted = true;
-                candidate.Actor = SpawnPrefabCandidate(config, transform, candidate.Surface);
+                candidate.Actor = SpawnPrefabCandidate(config, transform, candidate.Surface, candidate.Yaw);
+                if (candidate.Actor != null)
+                {
+                    candidate.ActorId = candidate.Actor.ID;
+                    _spawnedPrefabRoots.Add(candidate.ActorId);
+                    _prefabBrushesDirty = true;
+                }
                 chunk.Candidates[i] = candidate;
                 spawnBudget--;
             }
             if (spawnBudget == 0)
                 break;
         }
+
+        foreach (var chunk in _prefabChunks.Values)
+        {
+            if (chunk.Entry < _prefabConfigs.Length)
+                return true;
+            foreach (var candidate in chunk.Candidates)
+            {
+                var prefab = _prefabConfigs[candidate.Entry].Prefab;
+                if (candidate.Actor == null && !candidate.SpawnAttempted && prefab != null && !prefab.LastLoadFailed &&
+                    PrefabInRange(transform.LocalToWorld(candidate.Surface), target, PrefabSpawnDistance))
+                    return true;
+            }
+        }
+        return false;
     }
 
     private static bool TryGetPrefabCameraPosition(out Vector3 position)
@@ -1765,12 +2036,20 @@ public partial class QuadSphereActor : Actor
                 var candidate = chunk.Candidates[i];
                 if (candidate.Actor != null && !PrefabInRange(candidate.Actor.Position, target, PrefabSpawnDistance))
                 {
-                    Destroy(candidate.Actor);
-                    _prefabDiagnosticCounts.Destroyed++;
+                    DestroySpawnedPrefab(candidate.Actor);
                     candidate.Actor = null;
                 }
-                if (candidate.Actor == null && !PrefabInRange(transform.LocalToWorld(candidate.Surface), target, PrefabSpawnDistance))
-                    candidate.SpawnAttempted = false;
+                if (candidate.Actor == null)
+                {
+                    if (candidate.ActorId != Guid.Empty)
+                    {
+                        _spawnedPrefabRoots.Remove(candidate.ActorId);
+                        candidate.ActorId = Guid.Empty;
+                        _prefabBrushesDirty = true;
+                    }
+                    if (!PrefabInRange(transform.LocalToWorld(candidate.Surface), target, PrefabSpawnDistance))
+                        candidate.SpawnAttempted = false;
+                }
                 chunk.Candidates[i] = candidate;
             }
         }
@@ -1787,13 +2066,15 @@ public partial class QuadSphereActor : Actor
     private void AddPrefabCandidate(QuadSpherePrefabConfig config, PrefabChunk chunk, int root, int face, int x, int y, int attempt)
     {
         _prefabDiagnosticCounts.Attempts++;
-        if (TryPlacement(config, _chunksPerPatch, root, chunk.Entry, face, x, y, attempt, true, out var surface))
-            chunk.Candidates.Add(new PrefabCandidate { Surface = (Vector3)surface, Entry = chunk.Entry });
+        if (TryPlacement(config, _chunksPerPatch, root, chunk.Entry, face, x, y, attempt, true, out var surface, out _))
+            chunk.Candidates.Add(new PrefabCandidate { Surface = (Vector3)surface, Entry = chunk.Entry, Yaw = PlacementYaw(_noiseSeed, root, chunk.Entry, attempt) });
     }
 
-    private bool TryPlacement(QuadSpherePrefabConfig config, int divisions, int root, int entry, int face, int x, int y, int attempt, bool diagnostics, out Double3 surface)
+    private bool TryPlacement(QuadSpherePrefabConfig config, int divisions, int root, int entry, int face, int x, int y, int attempt, bool diagnostics, out Double3 surface, out Double3 normal, QuadSphereFoliageNoiseType noiseType = QuadSphereFoliageNoiseType.Value, TerrainSnapshot terrain = null, bool useTerrainMesh = false)
     {
+        terrain ??= _prefabSnapshot;
         surface = Double3.Zero;
+        normal = Double3.Zero;
         double u = -1.0 + 2.0 * (x + PrefabRandom(_noiseSeed, root, entry, attempt, 1)) / divisions;
         double v = -1.0 + 2.0 * (y + PrefabRandom(_noiseSeed, root, entry, attempt, 2)) / divisions;
         // Rejection sampling corrects the cube projection's varying area.
@@ -1805,7 +2086,20 @@ public partial class QuadSphereActor : Actor
         }
 
         var direction = Direction(face, u, v);
-        surface = Surface(direction, _prefabSnapshot);
+        if (useTerrainMesh)
+        {
+            if (!TrySampleCommittedSurface(face, u, v, direction, out surface))
+            {
+                if (!_foliageSurfaceErrorLogged)
+                {
+                    Debug.LogWarning("Quad sphere foliage could not sample a committed terrain triangle; affected placements will be skipped.");
+                    _foliageSurfaceErrorLogged = true;
+                }
+                return false;
+            }
+        }
+        else
+            surface = Surface(direction, terrain);
         double altitude = surface.Length;
         double altitudeWeight = PrefabAltitudeWeight(altitude, config);
         if (altitudeWeight <= 0)
@@ -1813,15 +2107,15 @@ public partial class QuadSphereActor : Actor
             if (diagnostics) _prefabDiagnosticCounts.Altitude++;
             return false;
         }
-        var normal = SurfaceNormal(direction, _prefabSnapshot);
-        double slope = _prefabSnapshot.SimpleSphere ? 0.0 : Math.Acos(Math.Clamp(Double3.Dot(normal, direction), -1.0, 1.0)) * (180.0 / Math.PI);
+        normal = SurfaceNormal(direction, terrain);
+        double slope = terrain.SimpleSphere ? 0.0 : Math.Acos(Math.Clamp(Double3.Dot(normal, direction), -1.0, 1.0)) * (180.0 / Math.PI);
         if (slope < config.MinSlope || slope > config.MaxSlope)
         {
             if (diagnostics) _prefabDiagnosticCounts.Slope++;
             return false;
         }
 
-        double biomeWeight = PrefabBiomeWeight(direction, config.Biomes, _prefabSnapshot);
+        double biomeWeight = PrefabBiomeWeight(direction, config.Biomes, terrain);
         if (biomeWeight <= 0)
         {
             if (diagnostics) _prefabDiagnosticCounts.Biome++;
@@ -1830,17 +2124,7 @@ public partial class QuadSphereActor : Actor
 
         double noiseWeight = 1.0;
         if (config.NoiseStrength > 0)
-        {
-            double noise = 0, amplitude = 1, total = 0, frequency = Math.Clamp(config.NoiseFrequency, 0, 4096);
-            for (int octave = 0; octave < Math.Clamp(config.NoiseOctaves, 1, 8); octave++)
-            {
-                noise += ValueNoise(direction * frequency, unchecked(_noiseSeed + config.SeedOffset + octave * 1013)) * amplitude;
-                total += amplitude;
-                amplitude *= 0.5;
-                frequency *= 2;
-            }
-            noiseWeight -= Math.Clamp(config.NoiseStrength, 0, 1) * (1.0 - Math.Clamp((noise / total + 1.0) * 0.5, 0.0, 1.0));
-        }
+            noiseWeight -= Math.Clamp(config.NoiseStrength, 0, 1) * (1.0 - PlacementNoise(direction, config.NoiseFrequency, config.NoiseOctaves, config.SeedOffset, noiseType));
         double probability = Math.Clamp(config.Probability, 0, 1) * biomeWeight * altitudeWeight * noiseWeight;
         if (PrefabRandom(_noiseSeed, root, entry, attempt, 4) >= probability)
         {
@@ -1851,7 +2135,108 @@ public partial class QuadSphereActor : Actor
         return true;
     }
 
-    private Actor SpawnPrefabCandidate(QuadSpherePrefabConfig config, Transform transform, Vector3 surface)
+    private bool TrySampleCommittedSurface(int face, double u, double v, Double3 direction, out Double3 surface)
+    {
+        surface = Double3.Zero;
+        for (int level = 0; level <= 10; level++)
+        {
+            int divisions = _chunksPerPatch << level;
+            double patchX = (u + 1.0) * 0.5 * divisions;
+            double patchY = (v + 1.0) * 0.5 * divisions;
+            int x = Math.Clamp((int)patchX, 0, divisions - 1);
+            int y = Math.Clamp((int)patchY, 0, divisions - 1);
+            if (!_patches.TryGetValue((face, level, x, y), out var patch) || !patch.Committed)
+                continue;
+            return TrySamplePatchSurface(patch, _resolution, patchX - x, patchY - y, direction, out surface);
+        }
+        return false;
+    }
+
+    private static bool TrySamplePatchSurface(Patch patch, int resolution, double u, double v, Double3 direction, out Double3 surface)
+    {
+        surface = Double3.Zero;
+        if (patch.Vertices == null || patch.Vertices.Length < (resolution + 1) * (resolution + 1))
+            return false;
+        double gridX = Math.Clamp(u * resolution, 0.0, resolution);
+        double gridY = Math.Clamp(v * resolution, 0.0, resolution);
+        int x = Math.Min((int)gridX, resolution - 1);
+        int y = Math.Min((int)gridY, resolution - 1);
+        int a = y * (resolution + 1) + x;
+        int b = a + 1;
+        int c = a + resolution + 1;
+        int d = c + 1;
+        // Radial projection onto the cube face preserves the mesh's diagonal.
+        if (gridX - x + gridY - y > 1.0)
+            a = d;
+        var p0 = patch.Origin + (Double3)patch.Vertices[a];
+        var p1 = patch.Origin + (Double3)patch.Vertices[b];
+        var p2 = patch.Origin + (Double3)patch.Vertices[c];
+        var planeNormal = Double3.Cross(p1 - p0, p2 - p0);
+        double denominator = Double3.Dot(planeNormal, direction);
+        if (!double.IsFinite(denominator) || Math.Abs(denominator) < 1e-20)
+            return false;
+        double distance = Double3.Dot(planeNormal, p0) / denominator;
+        if (!double.IsFinite(distance) || distance <= 0)
+            return false;
+        surface = direction * distance;
+        return true;
+    }
+
+    private double PlacementNoise(Double3 direction, float noiseFrequency, int noiseOctaves, int seedOffset, QuadSphereFoliageNoiseType noiseType = QuadSphereFoliageNoiseType.Value)
+    {
+        double noise = 0, amplitude = 1, total = 0, frequency = Math.Clamp(noiseFrequency, 0, 4096);
+        for (int octave = 0; octave < Math.Clamp(noiseOctaves, 1, 8); octave++)
+        {
+            int seed = unchecked(_noiseSeed + seedOffset + octave * 1013);
+            double sample;
+            switch (noiseType)
+            {
+            case QuadSphereFoliageNoiseType.Value:
+                sample = ValueNoise(direction * frequency, seed);
+                break;
+            case QuadSphereFoliageNoiseType.Perlin:
+                sample = GradientNoise(direction * frequency, seed);
+                break;
+            case QuadSphereFoliageNoiseType.RidgedPerlin:
+                sample = 2.0 * (1.0 - Math.Clamp(Math.Abs(GradientNoise(direction * frequency, seed)), 0.0, 1.0)) - 1.0;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(noiseType), noiseType, "Unsupported foliage noise type.");
+            }
+            noise += sample * amplitude;
+            total += amplitude;
+            amplitude *= 0.5;
+            frequency *= 2;
+        }
+        return Math.Clamp((noise / total + 1.0) * 0.5, 0.0, 1.0);
+    }
+
+    private static double GradientNoise(Double3 p, int seed)
+    {
+        int x = (int)Math.Floor(p.X), y = (int)Math.Floor(p.Y), z = (int)Math.Floor(p.Z);
+        double fx = p.X - x, fy = p.Y - y, fz = p.Z - z;
+        double tx = fx * fx * fx * (fx * (fx * 6 - 15) + 10);
+        double ty = fy * fy * fy * (fy * (fy * 6 - 15) + 10);
+        double tz = fz * fz * fz * (fz * (fz * 6 - 15) + 10);
+        double result = 0;
+        for (int dz = 0; dz <= 1; dz++)
+            for (int dy = 0; dy <= 1; dy++)
+                for (int dx = 0; dx <= 1; dx++)
+                {
+                    uint hash = unchecked((uint)((x + dx) * 73856093 ^ (y + dy) * 19349663 ^ (z + dz) * 83492791 ^ seed));
+                    hash ^= hash >> 16; hash = unchecked(hash * 0x7feb352du); hash ^= hash >> 15;
+                    hash = unchecked(hash * 0x846ca68bu); hash ^= hash >> 16;
+                    int gradient = (int)(hash % 12);
+                    double gx = fx - dx, gy = fy - dy, gz = fz - dz;
+                    double a = gradient < 8 ? gx : gy;
+                    double b = gradient < 4 ? gy : gz;
+                    double value = ((gradient & 1) == 0 ? a : -a) + ((gradient & 2) == 0 ? b : -b);
+                    result += value * (dx == 0 ? 1 - tx : tx) * (dy == 0 ? 1 - ty : ty) * (dz == 0 ? 1 - tz : tz);
+                }
+        return result;
+    }
+
+    private Actor SpawnPrefabCandidate(QuadSpherePrefabConfig config, Transform transform, Vector3 surface, float yaw)
     {
         Vector3 position = transform.LocalToWorld(surface);
         Vector3 radial = position - transform.LocalToWorld(Vector3.Zero);
@@ -1861,8 +2246,6 @@ public partial class QuadSphereActor : Actor
             return null;
         }
         radial = Vector3.Normalize(radial);
-        Vector3 reference = Math.Abs(radial.Y) < 0.9 ? Vector3.UnitY : Vector3.UnitX;
-        Vector3 forward = Vector3.Normalize(Vector3.Cross(reference, radial));
         var instance = PrefabManager.SpawnPrefab(config.Prefab, null);
         if (instance == null)
         {
@@ -1870,7 +2253,7 @@ public partial class QuadSphereActor : Actor
             return null;
         }
         instance.Position = position;
-        instance.Orientation = Quaternion.LookRotation((Float3)forward, (Float3)radial);
+        instance.Orientation = PlacementOrientation(radial, yaw);
         instance.SetParent(this, true, false);
         _prefabDiagnosticCounts.Spawned++;
         return instance;
@@ -1881,15 +2264,24 @@ public partial class QuadSphereActor : Actor
         Biomes = config.Biomes,
         Density = config.Density,
         Probability = config.Probability,
+        NoiseFrequency = config.NoiseFrequency,
+        NoiseOctaves = config.NoiseOctaves,
+        SeedOffset = config.NoiseSeedOffset,
+        NoiseStrength = config.NoiseDensityStrength,
         MinAltitude = config.MinAltitude,
         MaxAltitude = config.MaxAltitude,
         MinSlope = config.MinSlope,
         MaxSlope = config.MaxSlope,
     };
 
+    private static bool ValidFoliageNoise(QuadSphereFoliageConfig config) =>
+        (config.NoiseType == QuadSphereFoliageNoiseType.Value || config.NoiseType == QuadSphereFoliageNoiseType.Perlin || config.NoiseType == QuadSphereFoliageNoiseType.RidgedPerlin) &&
+        float.IsFinite(config.NoiseFrequency) && config.NoiseFrequency >= 0 &&
+        float.IsFinite(config.NoiseDensityStrength) && float.IsFinite(config.NoiseScaleStrength);
+
     private void UpdateFoliage()
     {//!Engine.IsPlayMode || 
-        if (_prefabSnapshot == null || _foliageConfigs.Length == 0 ||
+        if (_foliageSnapshot == null || _foliageConfigs.Length == 0 ||
             !TryGetPrefabCameraPosition(out var camera) ||
             !double.IsFinite(camera.X) || !double.IsFinite(camera.Y) || !double.IsFinite(camera.Z))
         {
@@ -1916,38 +2308,75 @@ public partial class QuadSphereActor : Actor
             _foliageSelectionElapsed = 0;
             _foliageCellLimit = cellLimit;
             var nearest = new PriorityQueue<((int Cell, int Entry) Key, double Distance), (double Distance, int Cell, int Entry)>();
+            var regions = new PriorityQueue<FoliageSearchRegion, double>();
+            var deferred = new Stack<(FoliageSearchRegion Region, double LowerBound)>();
             var localCamera = (Double3)transform.WorldToLocal(camera);
-            int eligible = 0;
+            // Include rounding from world-space transforms, including large translations.
+            double padding = (camera.Length + transform.Translation.Length + _radius * scale + 1.0) * 0.00001;
             for (int entry = 0; entry < _foliageConfigs.Length; entry++)
             {
                 double spawnDistance = FoliageEntrySpawnDistance(_foliageConfigs[entry]);
-                if (!double.IsFinite(spawnDistance) || spawnDistance <= 0 || _foliageConfigs[entry].Model == null)
+                if (!double.IsFinite(spawnDistance) || spawnDistance <= 0 || _foliageConfigs[entry].Model == null ||
+                    !ValidFoliageNoise(_foliageConfigs[entry]))
                     continue;
                 double localDistance = (spawnDistance + cellBounds) / minScale;
                 for (int face = 0; face < 6; face++)
                 {
-                    if (!FoliageFaceRange(face, localCamera, localDistance, out int minX, out int maxX, out int minY, out int maxY))
-                        continue;
-                    for (int y = minY; y <= maxY; y++)
-                        for (int x = minX; x <= maxX; x++)
-                        {
-                            int cellKey = (face * _foliageDivisions + y) * _foliageDivisions + x;
-                            var key = (Cell: cellKey, Entry: entry);
-                            var center = FoliageCellCenter(face, x, y);
-                            double distance = (camera - transform.LocalToWorld(center)).Length;
-                            if (!double.IsFinite(distance) || distance > spawnDistance + cellBounds)
-                                continue;
-                            eligible++;
-                            if (nearest.Count == cellLimit)
-                            {
-                                var farthest = nearest.Peek();
-                                if (distance > farthest.Distance || (distance == farthest.Distance && key.CompareTo(farthest.Key) >= 0))
-                                    continue;
-                                nearest.Dequeue();
-                            }
-                            nearest.Enqueue((key, distance), (-distance, -cellKey, -entry));
-                        }
+                    if (FoliageFaceRange(face, localCamera, localDistance, out int minX, out int maxX, out int minY, out int maxY))
+                        EnqueueFoliageRegion(regions, deferred, new FoliageSearchRegion { Face = face, Entry = entry, MinX = minX, MaxX = maxX, MinY = minY, MaxY = maxY, MaxDistance = spawnDistance + cellBounds }, camera, transform, scale, padding);
                 }
+            }
+            int eligible = 0;
+            while (regions.Count != 0 || deferred.Count != 0)
+            {
+                bool fromStack = deferred.Count != 0;
+                FoliageSearchRegion region;
+                double lowerBound;
+                if (fromStack)
+                {
+                    var item = deferred.Pop();
+                    region = item.Region;
+                    lowerBound = item.LowerBound;
+                }
+                else
+                    regions.TryDequeue(out region, out lowerBound);
+                if (eligible > cellLimit && lowerBound > nearest.Peek().Distance)
+                {
+                    if (!fromStack)
+                        break;
+                    continue;
+                }
+                if (region.MinX != region.MaxX || region.MinY != region.MaxY)
+                {
+                    var other = region;
+                    if (region.MaxX - region.MinX >= region.MaxY - region.MinY)
+                    {
+                        region.MaxX = (region.MinX + region.MaxX) / 2;
+                        other.MinX = region.MaxX + 1;
+                    }
+                    else
+                    {
+                        region.MaxY = (region.MinY + region.MaxY) / 2;
+                        other.MinY = region.MaxY + 1;
+                    }
+                    EnqueueFoliageRegion(regions, deferred, region, camera, transform, scale, padding);
+                    EnqueueFoliageRegion(regions, deferred, other, camera, transform, scale, padding);
+                    continue;
+                }
+                int cellKey = (region.Face * _foliageDivisions + region.MinY) * _foliageDivisions + region.MinX;
+                var key = (Cell: cellKey, Entry: region.Entry);
+                double distance = (camera - transform.LocalToWorld(FoliageCellCenter(region.Face, region.MinX, region.MinY))).Length;
+                if (!double.IsFinite(distance) || distance > region.MaxDistance)
+                    continue;
+                eligible++;
+                if (nearest.Count == cellLimit)
+                {
+                    var farthest = nearest.Peek();
+                    if (distance > farthest.Distance || (distance == farthest.Distance && key.CompareTo(farthest.Key) >= 0))
+                        continue;
+                    nearest.Dequeue();
+                }
+                nearest.Enqueue((key, distance), (-distance, -cellKey, -region.Entry));
             }
             _foliageCellsLimited = eligible > cellLimit;
             var desired = new HashSet<(int Cell, int Entry)>();
@@ -1975,7 +2404,7 @@ public partial class QuadSphereActor : Actor
                 _foliageCollisionElapsed = 0.1f;
             _foliageCellOrder.Clear();
             ordered.Sort((a, b) => a.Distance != b.Distance ? a.Distance.CompareTo(b.Distance) : a.Key.CompareTo(b.Key));
-            foreach (var item in ordered)
+        foreach (var item in ordered)
                 _foliageCellOrder.Add(item.Key);
         }
 
@@ -1983,7 +2412,7 @@ public partial class QuadSphereActor : Actor
         {
             _foliageCastShadows = FoliageCastShadows;
             foreach (var pair in _foliageCells)
-                if (pair.Value.Renderer != null)
+                if (pair.Value.Renderer != null && _foliageConfigs[pair.Key.Entry].Shadows == QuadSphereFoliageShadows.Legacy)
                     ConfigureFoliageDistance(pair.Value.Renderer, pair.Key.Entry);
         }
 
@@ -2013,17 +2442,14 @@ public partial class QuadSphereActor : Actor
                     break;
                 if (cell.AttemptCount < 0)
                 {
-                    double side = 2.0 / _foliageDivisions;
-                    double expected = config.Density * (_radius / 1000.0) * (_radius / 1000.0) * side * side;
+                    double expected = FoliageExpectedAttempts(config);
                     if (!double.IsFinite(expected) || expected > int.MaxValue - 1)
                     {
                         Debug.LogWarning("Quad sphere foliage density produces too many attempts per cell; reduce density or increase Foliage Cells Per Face.");
                         cell.Entry++;
                         continue;
                     }
-                    cell.AttemptCount = (int)expected;
-                    if (PrefabRandom(_noiseSeed, key, cell.Entry, -1, 0) < expected - cell.AttemptCount)
-                        cell.AttemptCount++;
+                    cell.AttemptCount = FoliageAttemptCount(expected, key, cell.Entry);
                     cell.Attempt = 0;
                 }
                 if (cell.Attempt >= cell.AttemptCount)
@@ -2033,16 +2459,8 @@ public partial class QuadSphereActor : Actor
                     continue;
                 }
                 int attempt = cell.Attempt++;
-                if (TryPlacement(placement, _foliageDivisions, key, cell.Entry, face, x, y, attempt, false, out var surface))
-                {
-                    Vector3 radial = Vector3.Normalize((Vector3)surface);
-                    Vector3 reference = Math.Abs(radial.Y) < 0.9 ? Vector3.UnitY : Vector3.UnitX;
-                    Float3 forward = (Float3)Vector3.Normalize(Vector3.Cross(reference, radial));
-                    float yaw = (float)(PrefabRandom(_noiseSeed, key, cell.Entry, attempt, 5) * Math.PI * 2.0);
-                    forward = Float3.Transform(forward, Quaternion.RotationAxis((Float3)radial, yaw));
-                    float instanceScale = config.MinScale + (config.MaxScale - config.MinScale) * (float)PrefabRandom(_noiseSeed, key, cell.Entry, attempt, 6);
-                    cell.Placements.Add(new FoliagePlacement { Entry = cell.Entry, Transform = new Transform((Vector3)surface, Quaternion.LookRotation(forward, (Float3)radial), new Float3(instanceScale)) });
-                }
+                if (TryPlacement(placement, _foliageDivisions, key, cell.Entry, face, x, y, attempt, false, out var surface, out var normal, config.NoiseType, _foliageSnapshot, true))
+                    AddFoliagePlacement(cell, config, surface, normal, key, attempt);
                 budget--;
             }
             if (cell.Entry != cellKey.Entry)
@@ -2061,11 +2479,80 @@ public partial class QuadSphereActor : Actor
         }
     }
 
+    private double FoliageExpectedAttempts(QuadSphereFoliageConfig config)
+    {
+        double side = 2.0 / _foliageDivisions;
+        return config.Density * (_radius / 1000.0) * (_radius / 1000.0) * side * side;
+    }
+
+    private int FoliageAttemptCount(double expected, int cell, int entry)
+    {
+        int count = (int)expected;
+        if (PrefabRandom(_noiseSeed, cell, entry, -1, 0) < expected - count)
+            count++;
+        return count;
+    }
+
+    private void AddFoliagePlacement(FoliageCell cell, QuadSphereFoliageConfig config, Double3 surface, Double3 normal, int key, int attempt)
+    {
+        float yaw = PlacementYaw(_noiseSeed, key, cell.Entry, attempt);
+        var orientation = FoliageOrientation(surface, normal, config.AlignToGroundNormal, yaw);
+        float instanceScale = FoliageInstanceScale(config, surface, key, cell.Entry, attempt);
+        cell.Placements.Add(new FoliagePlacement { Entry = cell.Entry, Transform = new Transform((Vector3)surface, orientation, new Float3(instanceScale)) });
+    }
+
+    private float FoliageInstanceScale(QuadSphereFoliageConfig config, Double3 surface, int key, int entry, int attempt)
+    {
+        float value = (float)PrefabRandom(_noiseSeed, key, entry, attempt, 6);
+        if (config.NoiseScaleStrength > 0)
+        {
+            float noise = (float)PlacementNoise(Double3.Normalize(surface), config.NoiseFrequency, config.NoiseOctaves, config.NoiseSeedOffset, config.NoiseType);
+            value += (noise - value) * Math.Clamp(config.NoiseScaleStrength, 0, 1);
+        }
+        return config.MinScale + (config.MaxScale - config.MinScale) * value;
+    }
+
+    private static Quaternion FoliageOrientation(Double3 surface, Double3 normal, bool alignToGroundNormal, float yaw)
+    {
+        Vector3 up = alignToGroundNormal ? (Vector3)normal : Vector3.Normalize((Vector3)surface);
+        return PlacementOrientation(up, yaw);
+    }
+
+    private static Quaternion PlacementOrientation(Vector3 up, float yaw)
+    {
+        Vector3 reference = Math.Abs(up.Y) < 0.9 ? Vector3.UnitY : Vector3.UnitX;
+        Float3 forward = (Float3)Vector3.Normalize(Vector3.Cross(reference, up));
+        forward = Float3.Transform(forward, Quaternion.RotationAxis((Float3)up, yaw));
+        return Quaternion.LookRotation(forward, (Float3)up);
+    }
+
     private Vector3 FoliageCellCenter(int face, int x, int y)
     {
         double u = -1.0 + 2.0 * (x + 0.5) / _foliageDivisions;
         double v = -1.0 + 2.0 * (y + 0.5) / _foliageDivisions;
         return (Vector3)(Direction(face, u, v) * _radius);
+    }
+
+    private void EnqueueFoliageRegion(PriorityQueue<FoliageSearchRegion, double> regions, Stack<(FoliageSearchRegion Region, double LowerBound)> deferred, FoliageSearchRegion region, Vector3 camera, Transform transform, double scale, double padding)
+    {
+        double u = -1.0 + (region.MinX + region.MaxX + 1.0) / _foliageDivisions;
+        double v = -1.0 + (region.MinY + region.MaxY + 1.0) / _foliageDivisions;
+        var center = (Vector3)(Direction(region.Face, u, v) * _radius);
+        double width = (double)(region.MaxX - region.MinX) / _foliageDivisions;
+        double height = (double)(region.MaxY - region.MinY) / _foliageDivisions;
+        // Cube-face normalization is 1-Lipschitz; max scale bounds the world-space radius.
+        double radius = _radius * scale * Math.Sqrt(width * width + height * height) + padding;
+        double lowerBound = (camera - transform.LocalToWorld(center)).Length - radius;
+        if (!double.IsFinite(lowerBound))
+            lowerBound = 0;
+        if (lowerBound > region.MaxDistance)
+            return;
+        lowerBound = Math.Max(0, lowerBound);
+        // Avoid an unbounded priority queue when many cells are equally distant.
+        if (regions.Count >= 8192)
+            deferred.Push((region, lowerBound));
+        else
+            regions.Enqueue(region, lowerBound);
     }
 
     private bool FoliageFaceRange(int face, Double3 camera, double localDistance, out int minX, out int maxX, out int minY, out int maxY)
@@ -2125,11 +2612,14 @@ public partial class QuadSphereActor : Actor
     private int FoliageEntryColliderLimit(QuadSphereFoliageConfig config) =>
         Math.Clamp(config.MaxColliders == -1 ? MaxFoliageColliders : config.MaxColliders, 0, 1024);
 
+    private bool FoliageEntryCastsShadows(QuadSphereFoliageConfig config) =>
+        config.Shadows == QuadSphereFoliageShadows.Legacy ? FoliageCastShadows : config.Shadows == QuadSphereFoliageShadows.Enabled;
+
     private void InstallFoliageCell(FoliageCell cell, int entry, ref int budget)
     {
         if (cell.Placements.Count == 0)
         {
-            cell.Complete = true;
+            cell.Complete = cell.GenerationComplete;
             return;
         }
         if (budget == 0)
@@ -2141,6 +2631,7 @@ public partial class QuadSphereActor : Actor
             cell.Renderer.LocalTransform = FlaxEngine.Transform.Identity;
         }
         var renderer = cell.Renderer;
+        int previouslyInstalled = cell.Installed;
         while (cell.Installed < cell.Placements.Count && budget > 0)
         {
             var placement = cell.Placements[cell.Installed++];
@@ -2155,12 +2646,13 @@ public partial class QuadSphereActor : Actor
             renderer.AddInstance(ref instance);
             budget--;
         }
-        if (cell.Installed < cell.Placements.Count)
-            return;
-        ConfigureFoliageDistance(renderer, entry);
-        renderer.RebuildClusters();
-        renderer.IsActive = true;
-        cell.Complete = true;
+        if (cell.Installed != previouslyInstalled)
+        {
+            ConfigureFoliageDistance(renderer, entry);
+            renderer.RebuildClusters();
+            renderer.IsActive = true;
+        }
+        cell.Complete = cell.GenerationComplete && cell.Installed == cell.Placements.Count;
     }
 
     private void ConfigureFoliageDistance(Foliage renderer, int entry)
@@ -2169,7 +2661,7 @@ public partial class QuadSphereActor : Actor
         {
             renderer.FoliageTypes[i].CullDistance = (float)Math.Min(FoliageEntrySpawnDistance(_foliageConfigs[entry]), float.MaxValue);
             renderer.FoliageTypes[i].CullDistanceRandomRange = 0;
-            renderer.FoliageTypes[i].ShadowsMode = FoliageCastShadows ? ShadowsCastingMode.All : ShadowsCastingMode.None;
+            renderer.FoliageTypes[i].ShadowsMode = FoliageEntryCastsShadows(_foliageConfigs[entry]) ? ShadowsCastingMode.All : ShadowsCastingMode.None;
         }
         renderer.UpdateCullDistance();
     }
@@ -2180,7 +2672,7 @@ public partial class QuadSphereActor : Actor
         foreach (var pair in _foliageCells)
         {
             var cell = pair.Value;
-            if (!cell.Complete || cell.Renderer == null)
+            if (cell.Renderer == null || !cell.Renderer.IsActive)
                 continue;
             var config = _foliageConfigs[pair.Key.Entry];
             int limit = FoliageEntryColliderLimit(config);
@@ -2197,7 +2689,7 @@ public partial class QuadSphereActor : Actor
                     continue;
             }
             var candidates = nearest[pair.Key.Entry] ??= new List<FoliageCollisionCandidate>();
-            for (int i = 0; i < cell.Placements.Count; i++)
+            for (int i = 0; i < cell.Installed; i++)
             {
                 var placement = cell.Placements[i];
                 var size = config.CollisionSize;
@@ -2264,6 +2756,78 @@ public partial class QuadSphereActor : Actor
         }
     }
 
+    private void InvalidateFoliageForPatches(IEnumerable<(int Face, int Level, int X, int Y)> patches)
+    {
+        var liveCells = new HashSet<int>();
+        foreach (var key in _foliageCells.Keys)
+            liveCells.Add(key.Cell);
+        var affectedCells = new HashSet<int>();
+        foreach (var patch in patches)
+        {
+            int divisions = _chunksPerPatch << patch.Level;
+            int minX = (int)((long)patch.X * _foliageDivisions / divisions);
+            int minY = (int)((long)patch.Y * _foliageDivisions / divisions);
+            int maxX = (int)(((long)(patch.X + 1) * _foliageDivisions - 1) / divisions);
+            int maxY = (int)(((long)(patch.Y + 1) * _foliageDivisions - 1) / divisions);
+            long count = (long)(maxX - minX + 1) * (maxY - minY + 1);
+            if (count <= liveCells.Count)
+            {
+                for (int y = minY; y <= maxY; y++)
+                    for (int x = minX; x <= maxX; x++)
+                    {
+                        int cell = (patch.Face * _foliageDivisions + y) * _foliageDivisions + x;
+                        if (liveCells.Contains(cell))
+                            affectedCells.Add(cell);
+                    }
+            }
+            else
+            {
+                foreach (int cell in liveCells)
+                {
+                    int face = cell / (_foliageDivisions * _foliageDivisions);
+                    int y = cell / _foliageDivisions % _foliageDivisions;
+                    int x = cell % _foliageDivisions;
+                    if (face == patch.Face && x >= minX && x <= maxX && y >= minY && y <= maxY)
+                        affectedCells.Add(cell);
+                }
+            }
+            if (affectedCells.Count == liveCells.Count)
+                break;
+        }
+        if (affectedCells.Count == 0)
+            return;
+        var affected = new List<(int Cell, int Entry)>();
+        foreach (var key in _foliageCells.Keys)
+            if (affectedCells.Contains(key.Cell))
+                affected.Add(key);
+
+        var colliders = new List<(int Cell, int Entry, int Index)>();
+        foreach (var pair in _foliageActiveColliders)
+            if (affectedCells.Contains(pair.Key.Cell))
+                colliders.Add(pair.Key);
+        foreach (var key in colliders)
+        {
+            var collider = _foliageActiveColliders[key];
+            if (collider != null)
+            {
+                collider.IsActive = false;
+                _foliageColliderPool.Add(collider);
+            }
+            _foliageActiveColliders.Remove(key);
+        }
+        foreach (var key in affected)
+        {
+            var cell = _foliageCells[key];
+            if (cell.Renderer != null)
+            {
+                cell.Renderer.IsActive = false;
+                Destroy(cell.Renderer);
+            }
+            _foliageCells[key] = new FoliageCell { Entry = key.Entry };
+        }
+        _foliageCollisionElapsed = 0.1f;
+    }
+
     private void DisableFoliageColliders()
     {
         foreach (var collider in _foliageActiveColliders.Values)
@@ -2313,16 +2877,33 @@ public partial class QuadSphereActor : Actor
 
     private static double PrefabBiomeWeight(Double3 direction, QuadSpherePrefabBiomes biomes, TerrainSnapshot settings)
     {
-        double beach = GetBeachWeight(BaseElevation(direction, settings), settings);
+        double height = BaseElevation(direction, settings);
+        double beach = GetBeachWeight(height, settings);
         var weights = GetBiomeWeights(direction, settings);
+        var overridden = ApplyBrushBiomes(direction, FlattenBeach(height, beach, settings), ApplyBeachWeight(weights, beach), settings, out bool applied);
         double result = 0;
-        for (int i = 0; i < 4; i++)
-            if (((int)biomes & (1 << i)) != 0)
-                result += weights[i] / 255.0 * (1.0 - beach);
-        if ((biomes & QuadSpherePrefabBiomes.Beach) != 0)
-            result += beach;
+        if (applied)
+        {
+            int total = overridden.R + overridden.G + overridden.B + overridden.A;
+            for (int i = 0; i < 4; i++)
+                if (((int)biomes & (1 << i)) != 0)
+                    result += overridden[i] / 255.0;
+            if ((biomes & QuadSpherePrefabBiomes.Beach) != 0)
+                result += (255 - total) / 255.0;
+        }
+        else
+        {
+            for (int i = 0; i < 4; i++)
+                if (((int)biomes & (1 << i)) != 0)
+                    result += weights[i] / 255.0 * (1.0 - beach);
+            if ((biomes & QuadSpherePrefabBiomes.Beach) != 0)
+                result += beach;
+        }
         return result;
     }
+
+    private static float PlacementYaw(int seed, int root, int entry, int attempt) =>
+        (float)(PrefabRandom(seed, root, entry, attempt, 5) * Math.PI * 2.0);
 
     private static double PrefabRandom(int seed, int root, int entry, int attempt, int channel)
     {
@@ -2338,10 +2919,7 @@ public partial class QuadSphereActor : Actor
         {
             var actor = candidate.Actor;
             if (actor != null)
-            {
-                Destroy(actor);
-                _prefabDiagnosticCounts.Destroyed++;
-            }
+                DestroySpawnedPrefab(actor);
         }
         chunk.Candidates.Clear();
     }
@@ -2351,6 +2929,16 @@ public partial class QuadSphereActor : Actor
         foreach (var chunk in _prefabChunks.Values)
             DestroyPrefabs(chunk);
         _prefabChunks.Clear();
+        _spawnedPrefabRoots.Clear();
+    }
+
+    private void DestroySpawnedPrefab(Actor actor)
+    {
+        _spawnedPrefabRoots.Remove(actor.ID);
+        _prefabBrushesDirty = true;
+        actor.IsActive = false;
+        Destroy(actor);
+        _prefabDiagnosticCounts.Destroyed++;
     }
 
     private void ClearPatches()
@@ -2359,6 +2947,8 @@ public partial class QuadSphereActor : Actor
         ClearFoliage();
         _foliageConfigs = Array.Empty<QuadSphereFoliageConfig>();
         _prefabSnapshot = null;
+        _foliageSnapshot = null;
+        _prefabBrushesDirty = false;
         _prefabConfigs = Array.Empty<QuadSpherePrefabConfig>();
         _hasCompletedLod = false;
         CancelGeneration();

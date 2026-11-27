@@ -10,6 +10,25 @@ public enum QuadSphereBrushMode
     Carve,
     /// <summary>Blend the terrain toward the brush center's radial height.</summary>
     Flatten,
+    /// <summary>Leave terrain height unchanged.</summary>
+    None,
+}
+
+/// <summary>Biome layer applied by a quad-sphere brush.</summary>
+public enum QuadSphereBrushBiome
+{
+    /// <summary>Keep the existing biome weights.</summary>
+    None,
+    /// <summary>Override with material layer 0.</summary>
+    Layer0,
+    /// <summary>Override with material layer 1.</summary>
+    Layer1,
+    /// <summary>Override with material layer 2.</summary>
+    Layer2,
+    /// <summary>Override with material layer 3.</summary>
+    Layer3,
+    /// <summary>Override with the beach layer.</summary>
+    Beach,
 }
 
 /// <summary>Shape of a quad-sphere terrain brush.</summary>
@@ -25,20 +44,24 @@ public enum QuadSphereBrushShape
 [ActorToolbox("Terrain", "Quad Sphere Brush")]
 public class QuadSphereBrush : Actor
 {
-    /// <summary>Quad spheres affected by this brush; an empty list affects none.</summary>
-    [Tooltip("Quad spheres affected by this brush. An empty list affects none.")]
+    /// <summary>Explicitly targeted quad spheres. A brush inside a spawned quad-sphere prefab also affects its spawning planet.</summary>
+    [Tooltip("Explicitly targeted quad spheres. A brush inside a spawned quad-sphere prefab also affects its spawning planet, even when this list is empty.")]
     public QuadSphereActor[] Targets = Array.Empty<QuadSphereActor>();
 
-    /// <summary>Brush operation.</summary>
-    [Tooltip("Flatten blends toward the brush center's radial height for each target planet.")]
+    /// <summary>Brush height operation.</summary>
+    [Tooltip("Flatten blends toward the brush center's radial height. None leaves height unchanged, allowing a biome-only brush.")]
     public QuadSphereBrushMode Mode = QuadSphereBrushMode.Carve;
+
+    /// <summary>Optional material and foliage biome override.</summary>
+    [Tooltip("Override the material and foliage biome within the brush. The selected layer blends using the brush falloff; None leaves biomes unchanged. Overlapping overrides follow brush order.")]
+    public QuadSphereBrushBiome BiomeOverride = QuadSphereBrushBiome.None;
 
     /// <summary>Shape of the brush influence volume.</summary>
     [Tooltip("Circle uses a spherical volume. Square uses a cubic volume aligned to the planet and rotated by the brush.")]
     public QuadSphereBrushShape Shape = QuadSphereBrushShape.Circle;
 
     /// <summary>World-space radius or cube half-size of the influence volume.</summary>
-    [Tooltip("World-space radius for Circle or half-size for Square. Place the center near the unbrushed surface. Actor scale does not change this size.")]
+    [Tooltip("World-space radius for Circle or half-size for Square. Place the center near the unbrushed surface. Actor scale does not change this size. Brush changes regenerate intersecting terrain patches and foliage cells.")]
     public float Radius = 1000.0f;
 
     /// <summary>Fraction of the radius used for a smooth edge.</summary>

@@ -11,6 +11,7 @@
   "GameTarget": "FlaxGame",
   "EditorTarget": "FlaxEditor",
   "Configuration": {
+    "Dotnet": "10",
     "UseCSharp": true,
     "UseLargeWorlds": true,
     "UseReverseZ": true,
