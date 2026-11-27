@@ -48,7 +48,7 @@ public enum QuadSphereFoliageShadows
     Disabled,
 }
 
-/// <summary>Hemispheres where a foliage entry may grow. Poles lie on the actor's local Y axis.</summary>
+/// <summary>Hemispheres eligible for placement. Poles lie on the actor's local Y axis.</summary>
 public enum QuadSphereFoliageHemisphere
 {
     /// <summary>Both hemispheres.</summary>
@@ -282,6 +282,15 @@ public struct QuadSpherePrefabConfig
     /// <summary>Maximum allowed terrain slope in degrees from radial up.</summary>
     [DefaultValue(90.0f), Limit(0, 90)]
     public float MaxSlope;
+    /// <summary>Minimum temperature; 1 at the equator and 0 at the poles.</summary>
+    [DefaultValue(0.0f), Limit(0, 1, 0.01f), Tooltip("Minimum temperature. Temperature is 1 at the equator (local Y = 0) and falls linearly with latitude to 0 at either pole. Rebuild terrain after changing.")]
+    public float MinTemperature;
+    /// <summary>Maximum temperature; 1 at the equator and 0 at the poles.</summary>
+    [DefaultValue(1.0f), Limit(0, 1, 0.01f), Tooltip("Maximum temperature. Temperature is 1 at the equator (local Y = 0) and falls linearly with latitude to 0 at either pole. Rebuild terrain after changing.")]
+    public float MaxTemperature;
+    /// <summary>Hemisphere restriction.</summary>
+    [DefaultValue(QuadSphereFoliageHemisphere.Both), Tooltip("Restrict prefabs to the northern (+Y) or southern (-Y) hemisphere. Rebuild terrain after changing.")]
+    public QuadSphereFoliageHemisphere Hemisphere;
 
     /// <summary>Creates default placement settings.</summary>
     public QuadSpherePrefabConfig()
@@ -299,6 +308,17 @@ public struct QuadSpherePrefabConfig
         AltitudeFalloff = 0.0f;
         MinSlope = 0.0f;
         MaxSlope = 90.0f;
+        MinTemperature = 0;
+        MaxTemperature = 1;
+        Hemisphere = QuadSphereFoliageHemisphere.Both;
+    }
+
+    [OnDeserializing]
+    private void OnDeserializing(StreamingContext context)
+    {
+        MinTemperature = 0;
+        MaxTemperature = 1;
+        Hemisphere = QuadSphereFoliageHemisphere.Both;
     }
 }
 
@@ -586,7 +606,7 @@ public partial class QuadSphereActor : Actor
 
     private struct PrefabDiagnosticCounts
     {
-        public long Attempts, Area, Altitude, Slope, Biome, Probability, Radial, SpawnFailed, Spawned, Destroyed;
+        public long Attempts, Area, Hemisphere, Temperature, Altitude, Slope, Biome, Probability, Radial, SpawnFailed, Spawned, Destroyed;
     }
 
     private sealed class HeightImage
@@ -644,6 +664,39 @@ public partial class QuadSphereActor : Actor
                     return false;
             return true;
         }
+    }
+
+    /// <summary>Converts a world position to planet-local latitude, longitude, and altitude.</summary>
+    /// <param name="worldPosition">Position in world space.</param>
+    /// <param name="latitude">Latitude in degrees, from -90 at local -Y to 90 at local +Y.</param>
+    /// <param name="longitude">Longitude in degrees, from -180 to 180; zero is local +X and positive 90 is local +Z. At a pole, longitude is zero.</param>
+    /// <param name="altitude">Signed distance in planet-local units above the configured base <see cref="Radius"/>, not the terrain surface.</param>
+    /// <exception cref="ArgumentException">The position is non-finite, at the planet center, or produces an altitude outside the float range.</exception>
+    /// <exception cref="InvalidOperationException">The planet radius or transform is invalid.</exception>
+    public void GetCoordinates(Vector3 worldPosition, out float latitude, out float longitude, out float altitude)
+    {
+        var transform = Transform;
+        if (!double.IsFinite(Radius) || Radius <= 0 ||
+            !double.IsFinite(transform.Translation.X) || !double.IsFinite(transform.Translation.Y) || !double.IsFinite(transform.Translation.Z) ||
+            !float.IsFinite(transform.Orientation.X) || !float.IsFinite(transform.Orientation.Y) || !float.IsFinite(transform.Orientation.Z) || !float.IsFinite(transform.Orientation.W) ||
+            !float.IsFinite(transform.Scale.X) || !float.IsFinite(transform.Scale.Y) || !float.IsFinite(transform.Scale.Z) ||
+            transform.Scale.X == 0 || transform.Scale.Y == 0 || transform.Scale.Z == 0)
+            throw new InvalidOperationException("Quad sphere coordinates require a positive finite radius and a finite transform with nonzero scale.");
+        if (!double.IsFinite(worldPosition.X) || !double.IsFinite(worldPosition.Y) || !double.IsFinite(worldPosition.Z))
+            throw new ArgumentException("World position must be finite.", nameof(worldPosition));
+
+        var local = (Double3)transform.WorldToLocal(worldPosition);
+        double distance = local.Length;
+        if (!double.IsFinite(distance) || distance == 0)
+            throw new ArgumentException("World position must have a finite, nonzero distance from the planet center in local space.", nameof(worldPosition));
+        double height = distance - Radius;
+        if (!double.IsFinite(height) || height > float.MaxValue || height < -float.MaxValue)
+            throw new ArgumentException("Altitude is outside the float range.", nameof(worldPosition));
+
+        double horizontal = Math.Sqrt(local.X * local.X + local.Z * local.Z);
+        latitude = (float)(Math.Atan2(local.Y, horizontal) * (180.0 / Math.PI));
+        longitude = horizontal == 0 ? 0 : (float)(Math.Atan2(local.Z, local.X) * (180.0 / Math.PI));
+        altitude = (float)height;
     }
 
     /// <summary>Checks whether the committed terrain patch in the direction of a world-space position has collision ready. False when collision is disabled.</summary>
@@ -1897,12 +1950,12 @@ public partial class QuadSphereActor : Actor
         text.Append($" MainCamera={(hasTarget ? target.ToString() : "missing")}, spawnDistance={PrefabSpawnDistance}, radius={_radius}, chunksPerFaceSide={_chunksPerPatch}, chunkBounds={_cullRadius}, attemptsPerUpdate={PrefabAttemptsPerUpdate}.");
         text.Append($" Configs: live={PrefabConfigs?.Length ?? 0}, rebuildSnapshot={_prefabConfigs.Length}; chunks={_prefabChunks.Count}/{_cullCenters?.Length ?? 0}, pendingChunks={pendingChunks}, candidates={candidates}, candidatesInRange={inRange}, waitingToSpawn={waitingToSpawn}, trackedActors={alive}, inScene={inScene}, activeActors={active}.");
         text.Append($" Foliage: configs={_foliageConfigs.Length}, cells={_foliageCells.Count}, cellLimitReached={_foliageCellsLimited}, pendingCells={foliagePending}, placements={foliageInstances}, activeColliders={_foliageActiveColliders.Count}, pooledColliders={_foliageColliderPool.Count}.");
-        text.Append($" Since last report: attempts={counts.Attempts}, rejectedArea={counts.Area}, rejectedAltitude={counts.Altitude}, rejectedSlope={counts.Slope}, rejectedBiome={counts.Biome}, rejectedProbability={counts.Probability}, rejectedRadial={counts.Radial}, spawnFailed={counts.SpawnFailed}, spawned={counts.Spawned}, destructionScheduled={counts.Destroyed}.");
+        text.Append($" Since last report: attempts={counts.Attempts}, rejectedArea={counts.Area}, rejectedHemisphere={counts.Hemisphere}, rejectedTemperature={counts.Temperature}, rejectedAltitude={counts.Altitude}, rejectedSlope={counts.Slope}, rejectedBiome={counts.Biome}, rejectedProbability={counts.Probability}, rejectedRadial={counts.Radial}, spawnFailed={counts.SpawnFailed}, spawned={counts.Spawned}, destructionScheduled={counts.Destroyed}.");
         for (int i = 0; i < _prefabConfigs.Length; i++)
         {
             var config = _prefabConfigs[i];
             string asset = config.Prefab == null ? "missing" : config.Prefab.LastLoadFailed ? "load failed" : config.Prefab.IsLoaded ? "loaded" : "loading";
-            text.Append($" Entry {i}: asset={asset}, valid={ValidPrefabConfig(config)}, density={config.Density}, probability={config.Probability}, biomes={config.Biomes}, altitude={config.MinAltitude}..{config.MaxAltitude}, altitudeFalloff={config.AltitudeFalloff}, slope={config.MinSlope}..{config.MaxSlope}, noiseStrength={config.NoiseStrength}.");
+            text.Append($" Entry {i}: asset={asset}, valid={ValidPrefabConfig(config)}, density={config.Density}, probability={config.Probability}, biomes={config.Biomes}, altitude={config.MinAltitude}..{config.MaxAltitude}, altitudeFalloff={config.AltitudeFalloff}, slope={config.MinSlope}..{config.MaxSlope}, temperature={config.MinTemperature}..{config.MaxTemperature}, hemisphere={config.Hemisphere}, noiseStrength={config.NoiseStrength}.");
         }
         Debug.Log(text.ToString());
     }
@@ -2106,7 +2159,7 @@ public partial class QuadSphereActor : Actor
             chunk.Candidates.Add(new PrefabCandidate { Surface = (Vector3)surface, Entry = chunk.Entry, Yaw = PlacementYaw(_noiseSeed, root, chunk.Entry, attempt) });
     }
 
-    private bool TryPlacement(QuadSpherePrefabConfig config, int divisions, int root, int entry, int face, int x, int y, int attempt, bool diagnostics, out Double3 surface, out Double3 normal, QuadSphereFoliageNoiseType noiseType = QuadSphereFoliageNoiseType.Value, TerrainSnapshot terrain = null, bool useTerrainMesh = false, bool smoothSlope = false, float minTemperature = 0.0f, float maxTemperature = 1.0f, QuadSphereFoliageHemisphere hemisphere = QuadSphereFoliageHemisphere.Both)
+    private bool TryPlacement(QuadSpherePrefabConfig config, int divisions, int root, int entry, int face, int x, int y, int attempt, bool diagnostics, out Double3 surface, out Double3 normal, QuadSphereFoliageNoiseType noiseType = QuadSphereFoliageNoiseType.Value, TerrainSnapshot terrain = null, bool useTerrainMesh = false, bool smoothSlope = false)
     {
         terrain ??= _prefabSnapshot;
         surface = Double3.Zero;
@@ -2122,15 +2175,21 @@ public partial class QuadSphereActor : Actor
         }
 
         var direction = Direction(face, u, v);
-        if (hemisphere == QuadSphereFoliageHemisphere.North && direction.Y < 0 ||
-            hemisphere == QuadSphereFoliageHemisphere.South && direction.Y > 0)
+        if (config.Hemisphere == QuadSphereFoliageHemisphere.North && direction.Y < 0 ||
+            config.Hemisphere == QuadSphereFoliageHemisphere.South && direction.Y > 0)
+        {
+            if (diagnostics) _prefabDiagnosticCounts.Hemisphere++;
             return false;
-        if (minTemperature > 0 || maxTemperature < 1)
+        }
+        if (config.MinTemperature > 0 || config.MaxTemperature < 1)
         {
             // 1 at the equator, 0 at the poles, linear in latitude.
             double temperature = 1.0 - Math.Asin(Math.Clamp(Math.Abs(direction.Y), 0.0, 1.0)) / (Math.PI * 0.5);
-            if (temperature < minTemperature || temperature > maxTemperature)
+            if (temperature < config.MinTemperature || temperature > config.MaxTemperature)
+            {
+                if (diagnostics) _prefabDiagnosticCounts.Temperature++;
                 return false;
+            }
         }
         if (useTerrainMesh)
         {
@@ -2353,6 +2412,9 @@ public partial class QuadSphereActor : Actor
         MaxAltitude = config.MaxAltitude,
         MinSlope = config.MinSlope,
         MaxSlope = config.MaxSlope,
+        MinTemperature = config.MinTemperature,
+        MaxTemperature = config.MaxTemperature,
+        Hemisphere = config.Hemisphere,
     };
 
     private static bool ValidFoliageNoise(QuadSphereFoliageConfig config) =>
@@ -2465,7 +2527,7 @@ public partial class QuadSphereActor : Actor
                     continue;
                 }
                 int attempt = cell.Attempt++;
-                if (TryPlacement(placement, _foliageDivisions, key, cell.Entry, face, x, y, attempt, false, out var surface, out var normal, config.NoiseType, _foliageSnapshot, true, config.SmoothSlope, config.MinTemperature, config.MaxTemperature, config.Hemisphere))
+                if (TryPlacement(placement, _foliageDivisions, key, cell.Entry, face, x, y, attempt, false, out var surface, out var normal, config.NoiseType, _foliageSnapshot, true, config.SmoothSlope))
                     AddFoliagePlacement(cell, config, surface, normal, key, attempt);
                 budget--;
             }

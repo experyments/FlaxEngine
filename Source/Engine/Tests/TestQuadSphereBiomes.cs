@@ -38,9 +38,73 @@ public partial class QuadSphereActor
             Assert.That(config, Is.EqualTo(expected));
             Assert.That(ValidPrefabConfig(config), Is.True);
             Assert.That(config.Biomes, Is.EqualTo(QuadSpherePrefabBiomes.All));
+            Assert.That(config.MinTemperature, Is.EqualTo(0));
+            Assert.That(config.MaxTemperature, Is.EqualTo(1));
+            Assert.That(config.Hemisphere, Is.EqualTo(QuadSphereFoliageHemisphere.Both));
             Assert.That(PrefabAltitudeWeight(100000, config), Is.EqualTo(1));
         }
 #endif
+
+        [TestCase(1000, 0, 0, 0, 0, 0)]
+        [TestCase(0, 1000, 0, 90, 0, 0)]
+        [TestCase(0, -1000, 0, -90, 0, 0)]
+        [TestCase(0, 0, 1100, 0, 90, 100)]
+        [TestCase(0, 0, -950, 0, -90, -50)]
+        [TestCase(-1000, 0, 0, 0, 180, 0)]
+        public void GeographicCoordinatesUsePlanetLocalAxesAndBaseRadius(float x, float y, float z, float expectedLatitude, float expectedLongitude, float expectedAltitude)
+        {
+            var planet = new QuadSphereActor();
+            try
+            {
+                planet.Radius = 1000;
+                planet.GetCoordinates(new Vector3(x, y, z), out var latitude, out var longitude, out var altitude);
+                Assert.That(latitude, Is.EqualTo(expectedLatitude).Within(0.001f));
+                Assert.That(longitude, Is.EqualTo(expectedLongitude).Within(0.001f));
+                Assert.That(altitude, Is.EqualTo(expectedAltitude).Within(0.001f));
+            }
+            finally
+            {
+                FlaxEngine.Object.Destroy(planet);
+            }
+        }
+
+        [Test]
+        public void GeographicCoordinatesAccountForPlanetTransform()
+        {
+            var planet = new QuadSphereActor();
+            try
+            {
+                planet.Radius = 1000;
+                planet.Transform = new Transform(new Vector3(5000, -2000, 3000), Quaternion.RotationAxis(Float3.UnitZ, 0.6f), new Float3(2, 3, 4));
+                var local = new Vector3(600, 800, 0);
+                var world = planet.Transform.LocalToWorld(local);
+                planet.GetCoordinates(world, out var latitude, out var longitude, out var altitude);
+                Assert.That(latitude, Is.EqualTo(53.1301f).Within(0.001f));
+                Assert.That(longitude, Is.EqualTo(0).Within(0.001f));
+                Assert.That(altitude, Is.EqualTo(0).Within(0.001f));
+            }
+            finally
+            {
+                FlaxEngine.Object.Destroy(planet);
+            }
+        }
+
+        [Test]
+        public void GeographicCoordinatesRejectUndefinedAndInvalidInputs()
+        {
+            var planet = new QuadSphereActor();
+            try
+            {
+                Assert.Throws<ArgumentException>(() => planet.GetCoordinates(planet.Position, out _, out _, out _));
+                Assert.Throws<ArgumentException>(() => planet.GetCoordinates(new Vector3(float.NaN, 0, 0), out _, out _, out _));
+                planet.Radius = 0;
+                Assert.Throws<InvalidOperationException>(() => planet.GetCoordinates(Vector3.One, out _, out _, out _));
+            }
+            finally
+            {
+                FlaxEngine.Object.Destroy(planet);
+            }
+        }
 
         [Test]
         public void FoliageFaceRangesIncludeEveryNearbyCellAcrossSeams()
@@ -735,6 +799,80 @@ public partial class QuadSphereActor
             {
                 if (instance != null)
                     FlaxEngine.Object.Destroy(instance);
+                FlaxEngine.Object.Destroy(planet);
+            }
+        }
+
+        [Test]
+        public void PrefabTemperatureSettingsPreserveLegacyDataAndRoundTrip()
+        {
+            var legacy = FlaxEngine.Json.JsonSerializer.Deserialize<QuadSpherePrefabConfig>("{\"Density\":2}");
+            Assert.That(legacy.MinTemperature, Is.EqualTo(0));
+            Assert.That(legacy.MaxTemperature, Is.EqualTo(1));
+            Assert.That(legacy.Hemisphere, Is.EqualTo(QuadSphereFoliageHemisphere.Both));
+
+            var original = new QuadSpherePrefabConfig { MinTemperature = 0.2f, MaxTemperature = 0.7f, Hemisphere = QuadSphereFoliageHemisphere.South };
+            var restored = FlaxEngine.Json.JsonSerializer.Deserialize<QuadSpherePrefabConfig>(FlaxEngine.Json.JsonSerializer.Serialize(original));
+            Assert.That(restored.MinTemperature, Is.EqualTo(original.MinTemperature));
+            Assert.That(restored.MaxTemperature, Is.EqualTo(original.MaxTemperature));
+            Assert.That(restored.Hemisphere, Is.EqualTo(original.Hemisphere));
+        }
+
+        [Test]
+        public void PrefabCandidatesRespectTemperatureAndHemisphere()
+        {
+            var planet = new QuadSphereActor();
+            try
+            {
+                planet._prefabSnapshot = CreateSettings();
+                planet._prefabSnapshot.SimpleSphere = true;
+                planet._chunksPerPatch = 1;
+                planet._noiseSeed = 12345;
+                var baseline = new QuadSpherePrefabConfig();
+                var hemispheres = new[] { QuadSphereFoliageHemisphere.Both, QuadSphereFoliageHemisphere.North, QuadSphereFoliageHemisphere.South };
+                foreach (var hemisphere in hemispheres)
+                {
+                    var filtered = new QuadSpherePrefabConfig { MinTemperature = 0.3f, MaxTemperature = 0.7f, Hemisphere = hemisphere };
+                    int accepted = 0, rejected = 0;
+                    for (int face = 0; face < 6; face++)
+                    for (int attempt = 0; attempt < 128; attempt++)
+                    {
+                        var all = new PrefabChunk();
+                        var selected = new PrefabChunk();
+                        planet.AddPrefabCandidate(baseline, all, face, face, 0, 0, attempt);
+                        planet.AddPrefabCandidate(filtered, selected, face, face, 0, 0, attempt);
+                        if (all.Candidates.Count == 0)
+                        {
+                            Assert.That(selected.Candidates.Count, Is.EqualTo(0));
+                            continue;
+                        }
+                        var surface = all.Candidates[0].Surface;
+                        double y = surface.Y / surface.Length;
+                        double temperature = 1.0 - Math.Asin(Math.Clamp(Math.Abs(y), 0.0, 1.0)) / (Math.PI * 0.5);
+                        bool expected = temperature >= filtered.MinTemperature && temperature <= filtered.MaxTemperature &&
+                                        (hemisphere != QuadSphereFoliageHemisphere.North || y >= 0) &&
+                                        (hemisphere != QuadSphereFoliageHemisphere.South || y <= 0);
+                        Assert.That(selected.Candidates.Count, Is.EqualTo(expected ? 1 : 0));
+                        if (expected)
+                        {
+                            Assert.That(selected.Candidates[0].Surface, Is.EqualTo(surface));
+                            accepted++;
+                        }
+                        else
+                            rejected++;
+                    }
+                    Assert.That(accepted, Is.GreaterThan(0));
+                    Assert.That(rejected, Is.GreaterThan(0));
+                }
+
+                var foliage = new QuadSphereFoliageConfig { MinTemperature = 0.2f, MaxTemperature = 0.8f, Hemisphere = QuadSphereFoliageHemisphere.North };
+                var settings = FoliagePlacementSettings(foliage);
+                Assert.That(settings.MinTemperature, Is.EqualTo(foliage.MinTemperature));
+                Assert.That(settings.MaxTemperature, Is.EqualTo(foliage.MaxTemperature));
+                Assert.That(settings.Hemisphere, Is.EqualTo(foliage.Hemisphere));
+            }
+            finally
+            {
                 FlaxEngine.Object.Destroy(planet);
             }
         }
