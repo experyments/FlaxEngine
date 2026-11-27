@@ -191,6 +191,112 @@ public partial class QuadSphereActor
         }
 
         [Test]
+        public void RemoveFoliageBrushUsesDeterministicFalloffWithoutChangingTerrainOrPrefabs()
+        {
+            var planet = new QuadSphereActor();
+            try
+            {
+                planet._noiseSeed = 12345;
+                var settings = CreateSettings(QuadSphereBrushMode.RemoveFoliage);
+                var brush = settings.Brushes[0];
+                Assert.That(Elevation(Double3.UnitY, settings), Is.EqualTo(0));
+                Assert.That(PrefabBiomeWeight(Double3.UnitY, QuadSpherePrefabBiomes.Layer0, settings), Is.EqualTo(1));
+                Assert.That(planet.FoliageRemovedByBrush(Double3.UnitY, settings, 1, 2, 0), Is.True);
+                Assert.That(planet.FoliageRemovedByBrush(Double3.UnitX, settings, 1, 2, 0), Is.False);
+
+                double cosine = 1.0 - 15.0 * 15.0 / (2.0 * 100.0 * 100.0);
+                var edge = new Double3(Math.Sqrt(1.0 - cosine * cosine), cosine, 0);
+                double weight = BrushWeight((Vector3)(edge * settings.Radius), brush);
+                Assert.That(weight, Is.EqualTo(0.5).Within(1e-5));
+                int removed = 0;
+                for (int attempt = 0; attempt < 256; attempt++)
+                {
+                    bool result = planet.FoliageRemovedByBrush(edge, settings, 1, 2, attempt);
+                    Assert.That(result, Is.EqualTo(PrefabRandom(12345, 1, 2, attempt, 7) < weight));
+                    Assert.That(planet.FoliageRemovedByBrush(edge, settings, 1, 2, attempt), Is.EqualTo(result));
+                    if (result)
+                        removed++;
+                }
+                Assert.That(removed, Is.InRange(80, 176));
+                brush.Falloff = 0;
+                Assert.That(planet.FoliageRemovedByBrush(edge, settings, 1, 2, 0), Is.True);
+                settings.SimpleSphere = true;
+                Assert.That(planet.FoliageRemovedByBrush(Double3.UnitY, settings, 1, 2, 0), Is.False);
+            }
+            finally
+            {
+                FlaxEngine.Object.Destroy(planet);
+            }
+        }
+
+        [Test]
+        public void RemoveFoliageModeBlocksFoliageButNotPrefabPlacement()
+        {
+            var planet = new QuadSphereActor();
+            try
+            {
+                var settings = CreateSettings(QuadSphereBrushMode.RemoveFoliage);
+                settings.Resolution = 2;
+                settings.ChunksPerPatch = 1;
+                settings.BiomeLayerCount = 1;
+                settings.Brushes[0].Position = Vector3.Zero;
+                settings.Brushes[0].Radius = 200;
+                settings.Brushes[0].Falloff = 0;
+                var geometry = BuildPatch((0, 0, 0, 0), settings, CancellationToken.None);
+                planet._patches.Add((0, 0, 0, 0), new Patch { Origin = geometry.Origin, Vertices = geometry.Vertices, Committed = true });
+                planet._chunksPerPatch = 1;
+                planet._resolution = 2;
+                var config = new QuadSpherePrefabConfig();
+                int accepted = 0;
+                for (int attempt = 0; attempt < 64; attempt++)
+                {
+                    bool prefab = planet.TryPlacement(config, 1, 0, 0, 0, 0, 0, attempt, false, out _, out _, terrain: settings);
+                    bool foliage = planet.TryPlacement(config, 1, 0, 0, 0, 0, 0, attempt, false, out _, out _, terrain: settings, useTerrainMesh: true);
+                    Assert.That(foliage, Is.False);
+                    if (prefab)
+                    {
+                        settings.Brushes[0].Mode = QuadSphereBrushMode.None;
+                        Assert.That(planet.TryPlacement(config, 1, 0, 0, 0, 0, 0, attempt, false, out _, out _, terrain: settings, useTerrainMesh: true), Is.True);
+                        settings.Brushes[0].Mode = QuadSphereBrushMode.RemoveFoliage;
+                        accepted++;
+                    }
+                }
+                Assert.That(accepted, Is.GreaterThan(0));
+            }
+            finally
+            {
+                FlaxEngine.Object.Destroy(planet);
+            }
+        }
+
+        [Test]
+        public void RemoveFoliageBrushSupportsSquareShapesAndOverlaps()
+        {
+            var planet = new QuadSphereActor();
+            try
+            {
+                var settings = CreateSettings(QuadSphereBrushMode.RemoveFoliage);
+                var brush = settings.Brushes[0];
+                brush.Falloff = 0;
+                var direction = new Double3(0.15, Math.Sqrt(1.0 - 2 * 0.15 * 0.15), 0.15);
+                Assert.That(planet.FoliageRemovedByBrush(direction, settings, 0, 0, 0), Is.False);
+                brush.Shape = QuadSphereBrushShape.Square;
+                QuadSphereBrush.GetSquareAxes(brush.Position, Vector3.Zero, Quaternion.Identity,
+                    out brush.AxisNormal, out brush.AxisX, out brush.AxisY);
+                Assert.That(planet.FoliageRemovedByBrush(direction, settings, 0, 0, 0), Is.True);
+                var other = new BrushData { Mode = QuadSphereBrushMode.RemoveFoliage, Position = new Vector3(100, 0, 0), Radius = 10 };
+                settings.Brushes = new[] { other, brush };
+                Assert.That(planet.FoliageRemovedByBrush(direction, settings, 0, 0, 0), Is.True);
+                settings.Brushes = new[] { brush, other };
+                Assert.That(planet.FoliageRemovedByBrush(direction, settings, 0, 0, 0), Is.True);
+            }
+            finally
+            {
+                FlaxEngine.Object.Destroy(planet);
+            }
+        }
+
+        [Test]
         public void BiomeOverrideBlendsAndChangesFoliageFiltersWithoutChangingHeight()
         {
             var settings = CreateSettings(QuadSphereBrushMode.None);

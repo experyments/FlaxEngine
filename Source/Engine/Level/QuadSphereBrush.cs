@@ -12,6 +12,8 @@ public enum QuadSphereBrushMode
     Flatten,
     /// <summary>Leave terrain height unchanged.</summary>
     None,
+    /// <summary>Remove generated foliage without changing terrain height.</summary>
+    RemoveFoliage,
 }
 
 /// <summary>Biome layer applied by a quad-sphere brush.</summary>
@@ -48,8 +50,8 @@ public class QuadSphereBrush : Actor
     [Tooltip("Explicitly targeted quad spheres. A brush inside a spawned quad-sphere prefab also affects its spawning planet, even when this list is empty.")]
     public QuadSphereActor[] Targets = Array.Empty<QuadSphereActor>();
 
-    /// <summary>Brush height operation.</summary>
-    [Tooltip("Flatten blends toward the brush center's radial height. None leaves height unchanged, allowing a biome-only brush.")]
+    /// <summary>Brush operation.</summary>
+    [Tooltip("Flatten blends toward the brush center's radial height. None leaves height unchanged. Remove Foliage excludes generated foliage using the unbrushed terrain footprint, without changing height or removing prefabs.")]
     public QuadSphereBrushMode Mode = QuadSphereBrushMode.Carve;
 
     /// <summary>Optional material and foliage biome override.</summary>
@@ -65,7 +67,7 @@ public class QuadSphereBrush : Actor
     public float Radius = 1000.0f;
 
     /// <summary>Fraction of the radius used for a smooth edge.</summary>
-    [Limit(0, 1, 0.01f), Tooltip("Fraction of the brush radius used for a smooth edge. Zero gives a hard edge.")]
+    [Limit(0, 1, 0.01f), Tooltip("Fraction of the brush radius used for a smooth edge. Zero gives a hard edge. Remove Foliage uses this to smoothly reduce foliage density.")]
     public float Falloff = 0.25f;
 
     /// <summary>Amount by which the carve operation lowers terrain, in planet-local units.</summary>

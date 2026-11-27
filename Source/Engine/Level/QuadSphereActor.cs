@@ -794,7 +794,7 @@ public partial class QuadSphereActor : Actor
         {
             if (brush == null || (!brush.TargetsActor(this) && !IsSpawnedPrefabBrush(brush)) || !float.IsFinite(brush.Radius) || brush.Radius <= 0 ||
                 !float.IsFinite(brush.Falloff) || !float.IsFinite(brush.Depth) ||
-                (brush.Mode != QuadSphereBrushMode.Carve && brush.Mode != QuadSphereBrushMode.Flatten && brush.Mode != QuadSphereBrushMode.None) ||
+                (brush.Mode != QuadSphereBrushMode.Carve && brush.Mode != QuadSphereBrushMode.Flatten && brush.Mode != QuadSphereBrushMode.None && brush.Mode != QuadSphereBrushMode.RemoveFoliage) ||
                 (brush.Shape != QuadSphereBrushShape.Circle && brush.Shape != QuadSphereBrushShape.Square))
                 continue;
             var position = brush.Position;
@@ -2088,6 +2088,8 @@ public partial class QuadSphereActor : Actor
         var direction = Direction(face, u, v);
         if (useTerrainMesh)
         {
+            if (FoliageRemovedByBrush(direction, terrain, root, entry, attempt))
+                return false;
             if (!TrySampleCommittedSurface(face, u, v, direction, out surface))
             {
                 if (!_foliageSurfaceErrorLogged)
@@ -2133,6 +2135,31 @@ public partial class QuadSphereActor : Actor
         }
 
         return true;
+    }
+
+    private bool FoliageRemovedByBrush(Double3 direction, TerrainSnapshot terrain, int cell, int entry, int attempt)
+    {
+        if (terrain.SimpleSphere)
+            return false;
+        double removal = 0;
+        Vector3 worldPosition = Vector3.Zero;
+        bool sampledPosition = false;
+        foreach (var brush in terrain.Brushes)
+        {
+            if (brush.Mode != QuadSphereBrushMode.RemoveFoliage)
+                continue;
+            if (!sampledPosition)
+            {
+                double height = BaseElevation(direction, terrain);
+                height = FlattenBeach(height, GetBeachWeight(height, terrain), terrain);
+                worldPosition = terrain.PlanetTransform.LocalToWorld((Vector3)(direction * Math.Max(0.01, terrain.Radius + height)));
+                sampledPosition = true;
+            }
+            removal = Math.Max(removal, BrushWeight(worldPosition, brush));
+            if (removal >= 1.0)
+                return true;
+        }
+        return removal > 0 && PrefabRandom(_noiseSeed, cell, entry, attempt, 7) < removal;
     }
 
     private bool TrySampleCommittedSurface(int face, double u, double v, Double3 direction, out Double3 surface)
