@@ -160,3 +160,4 @@ obj/
 *.code-workspace
 omnisharp.json
 .github/copilot-instructions.md
+Source/ThirdParty/EnTT/

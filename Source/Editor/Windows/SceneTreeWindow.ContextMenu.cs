@@ -1,6 +1,7 @@
 // Copyright (c) Wojciech Figat. All rights reserved.
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using FlaxEditor.GUI.ContextMenu;
 using FlaxEditor.SceneGraph;
@@ -49,6 +50,11 @@ namespace FlaxEditor.Windows
 
             // Basic editing options
             var firstSelection = hasSthSelected ? Editor.SceneEditing.Selection[0] as ActorNode : null;
+            if (isSingleActorSelected && firstSelection.Actor is not Scene)
+            {
+                b = contextMenu.AddButton("Snap to Editor Camera", () => SnapToEditorCamera(firstSelection));
+                b.Enabled = canEditScene && firstSelection.CanTransform && firstSelection.Actor != Editor.Windows.EditWin.ActorToPilot;
+            }
             b = contextMenu.AddButton("Rename", inputOptions.Rename, RenameSelection);
             b.Enabled = hasSthSelected;
             b = contextMenu.AddButton("Duplicate", inputOptions.Duplicate, Editor.SceneEditing.Duplicate);
@@ -144,6 +150,23 @@ namespace FlaxEditor.Windows
             ContextMenuShow?.Invoke(contextMenu);
 
             return contextMenu;
+        }
+
+        private void SnapToEditorCamera(ActorNode node)
+        {
+            var actor = node.Actor;
+            var before = actor.Transform;
+            var bounds = actor.BoundingBoxWithChildren;
+            var transform = before;
+            transform.Translation = Editor.Windows.EditWin.Viewport.ViewPosition;
+            transform.Orientation = Editor.Windows.EditWin.Viewport.ViewOrientation;
+            actor.Transform = transform;
+
+            var action = new TransformObjectsAction(new List<SceneGraphNode> { node }, new List<Transform> { before }, ref bounds, node.AffectsNavigationWithChildren);
+            if (Editor.Undo.Enabled)
+                Editor.Undo.AddAction(action);
+            else
+                Editor.Scene.MarkSceneEdited(node.ParentScene);
         }
 
         /// <summary>

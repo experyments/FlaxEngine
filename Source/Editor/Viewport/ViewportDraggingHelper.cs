@@ -203,8 +203,7 @@ namespace FlaxEditor.Viewport
             var location = hitLocation + new Vector3(0, bottomToCenter, 0);
             var gravityCenter = Vector3.Zero;
             var gravityUp = Float3.Zero;
-            var alignToGravity = actor is ModelInstanceActor &&
-                                 _viewport is MainEditorGizmoViewport mainViewport &&
+            var alignToGravity = _viewport is MainEditorGizmoViewport mainViewport &&
                                  mainViewport.TryGetGravityCenter(out gravityCenter) &&
                                  TryGetGravityUp(hitLocation, gravityCenter, out gravityUp);
             if (alignToGravity)

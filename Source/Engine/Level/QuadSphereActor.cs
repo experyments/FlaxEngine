@@ -48,6 +48,17 @@ public enum QuadSphereFoliageShadows
     Disabled,
 }
 
+/// <summary>Hemispheres where a foliage entry may grow. Poles lie on the actor's local Y axis.</summary>
+public enum QuadSphereFoliageHemisphere
+{
+    /// <summary>Both hemispheres.</summary>
+    Both,
+    /// <summary>Only the northern (positive Y) hemisphere.</summary>
+    North,
+    /// <summary>Only the southern (negative Y) hemisphere.</summary>
+    South,
+}
+
 /// <summary>Noise used to modulate foliage density and scale.</summary>
 public enum QuadSphereFoliageNoiseType
 {
@@ -111,6 +122,15 @@ public struct QuadSphereFoliageConfig
     /// <summary>Fade density from full at the minimum slope to zero at the maximum slope.</summary>
     [DefaultValue(false), Tooltip("Fade foliage density linearly from full at Min Slope to zero at Max Slope. Slopes outside the range are excluded; equal limits retain the hard cutoff. Rebuild terrain after changing.")]
     public bool SmoothSlope;
+    /// <summary>Minimum temperature; 1 at the equator and 0 at the poles.</summary>
+    [DefaultValue(0.0f), Limit(0, 1, 0.01f), Tooltip("Minimum temperature. Temperature is 1 at the equator (local Y = 0) and falls linearly with latitude to 0 at either pole. Rebuild terrain after changing.")]
+    public float MinTemperature;
+    /// <summary>Maximum temperature; 1 at the equator and 0 at the poles.</summary>
+    [DefaultValue(1.0f), Limit(0, 1, 0.01f), Tooltip("Maximum temperature. Temperature is 1 at the equator (local Y = 0) and falls linearly with latitude to 0 at either pole. Rebuild terrain after changing.")]
+    public float MaxTemperature;
+    /// <summary>Hemisphere restriction.</summary>
+    [DefaultValue(QuadSphereFoliageHemisphere.Both), Tooltip("Restrict foliage to the northern (+Y) or southern (-Y) hemisphere. Rebuild terrain after changing.")]
+    public QuadSphereFoliageHemisphere Hemisphere;
     /// <summary>Minimum uniform instance scale.</summary>
     [DefaultValue(1.0f), Limit(0.001f)]
     public float MinScale;
@@ -155,6 +175,9 @@ public struct QuadSphereFoliageConfig
         MinSlope = 0;
         MaxSlope = 90;
         SmoothSlope = false;
+        MinTemperature = 0;
+        MaxTemperature = 1;
+        Hemisphere = QuadSphereFoliageHemisphere.Both;
         MinScale = 1;
         MaxScale = 1;
         SpawnDistance = -1;
@@ -171,6 +194,9 @@ public struct QuadSphereFoliageConfig
         Shadows = QuadSphereFoliageShadows.Legacy;
         AlignToGroundNormal = false;
         SmoothSlope = false;
+        MinTemperature = 0;
+        MaxTemperature = 1;
+        Hemisphere = QuadSphereFoliageHemisphere.Both;
         NoiseType = QuadSphereFoliageNoiseType.Value;
         NoiseFrequency = 4.0f;
         NoiseOctaves = 3;
@@ -2080,7 +2106,7 @@ public partial class QuadSphereActor : Actor
             chunk.Candidates.Add(new PrefabCandidate { Surface = (Vector3)surface, Entry = chunk.Entry, Yaw = PlacementYaw(_noiseSeed, root, chunk.Entry, attempt) });
     }
 
-    private bool TryPlacement(QuadSpherePrefabConfig config, int divisions, int root, int entry, int face, int x, int y, int attempt, bool diagnostics, out Double3 surface, out Double3 normal, QuadSphereFoliageNoiseType noiseType = QuadSphereFoliageNoiseType.Value, TerrainSnapshot terrain = null, bool useTerrainMesh = false, bool smoothSlope = false)
+    private bool TryPlacement(QuadSpherePrefabConfig config, int divisions, int root, int entry, int face, int x, int y, int attempt, bool diagnostics, out Double3 surface, out Double3 normal, QuadSphereFoliageNoiseType noiseType = QuadSphereFoliageNoiseType.Value, TerrainSnapshot terrain = null, bool useTerrainMesh = false, bool smoothSlope = false, float minTemperature = 0.0f, float maxTemperature = 1.0f, QuadSphereFoliageHemisphere hemisphere = QuadSphereFoliageHemisphere.Both)
     {
         terrain ??= _prefabSnapshot;
         surface = Double3.Zero;
@@ -2096,6 +2122,16 @@ public partial class QuadSphereActor : Actor
         }
 
         var direction = Direction(face, u, v);
+        if (hemisphere == QuadSphereFoliageHemisphere.North && direction.Y < 0 ||
+            hemisphere == QuadSphereFoliageHemisphere.South && direction.Y > 0)
+            return false;
+        if (minTemperature > 0 || maxTemperature < 1)
+        {
+            // 1 at the equator, 0 at the poles, linear in latitude.
+            double temperature = 1.0 - Math.Asin(Math.Clamp(Math.Abs(direction.Y), 0.0, 1.0)) / (Math.PI * 0.5);
+            if (temperature < minTemperature || temperature > maxTemperature)
+                return false;
+        }
         if (useTerrainMesh)
         {
             if (FoliageRemovedByBrush(direction, terrain, root, entry, attempt))
@@ -2429,7 +2465,7 @@ public partial class QuadSphereActor : Actor
                     continue;
                 }
                 int attempt = cell.Attempt++;
-                if (TryPlacement(placement, _foliageDivisions, key, cell.Entry, face, x, y, attempt, false, out var surface, out var normal, config.NoiseType, _foliageSnapshot, true, config.SmoothSlope))
+                if (TryPlacement(placement, _foliageDivisions, key, cell.Entry, face, x, y, attempt, false, out var surface, out var normal, config.NoiseType, _foliageSnapshot, true, config.SmoothSlope, config.MinTemperature, config.MaxTemperature, config.Hemisphere))
                     AddFoliagePlacement(cell, config, surface, normal, key, attempt);
                 budget--;
             }
