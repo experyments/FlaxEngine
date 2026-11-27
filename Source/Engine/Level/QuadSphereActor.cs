@@ -108,6 +108,9 @@ public struct QuadSphereFoliageConfig
     /// <summary>Maximum allowed slope in degrees.</summary>
     [DefaultValue(90.0f), Limit(0, 90)]
     public float MaxSlope;
+    /// <summary>Fade density from full at the minimum slope to zero at the maximum slope.</summary>
+    [DefaultValue(false), Tooltip("Fade foliage density linearly from full at Min Slope to zero at Max Slope. Slopes outside the range are excluded; equal limits retain the hard cutoff. Rebuild terrain after changing.")]
+    public bool SmoothSlope;
     /// <summary>Minimum uniform instance scale.</summary>
     [DefaultValue(1.0f), Limit(0.001f)]
     public float MinScale;
@@ -117,6 +120,9 @@ public struct QuadSphereFoliageConfig
     /// <summary>World-space streaming and render distance; -1 uses the legacy actor setting.</summary>
     [DefaultValue(-1.0), Limit(-1), Tooltip("World-space streaming and render distance from the main camera. Zero disables this entry; -1 uses the legacy actor setting.")]
     public double SpawnDistance;
+    /// <summary>Maximum streamed cells for this entry; -1 uses only the actor-wide limit.</summary>
+    [DefaultValue(-1), Limit(-1, 4096), Tooltip("Maximum streamed cells for this entry, nearest first. Zero disables the entry; -1 uses only the actor-wide Max Foliage Cells limit. Rebuild terrain after changing.")]
+    public int MaxCells;
     /// <summary>World-space collision distance; -1 uses the legacy actor setting.</summary>
     [DefaultValue(-1.0), Limit(-1), Tooltip("World-space distance for nearby box collision. Zero disables collision; -1 uses the legacy actor setting.")]
     public double CollisionDistance;
@@ -148,9 +154,11 @@ public struct QuadSphereFoliageConfig
         MaxAltitude = double.MaxValue;
         MinSlope = 0;
         MaxSlope = 90;
+        SmoothSlope = false;
         MinScale = 1;
         MaxScale = 1;
         SpawnDistance = -1;
+        MaxCells = -1;
         CollisionDistance = -1;
         MaxColliders = -1;
         CollisionSize = Float3.Zero;
@@ -162,6 +170,7 @@ public struct QuadSphereFoliageConfig
     {
         Shadows = QuadSphereFoliageShadows.Legacy;
         AlignToGroundNormal = false;
+        SmoothSlope = false;
         NoiseType = QuadSphereFoliageNoiseType.Value;
         NoiseFrequency = 4.0f;
         NoiseOctaves = 3;
@@ -169,6 +178,7 @@ public struct QuadSphereFoliageConfig
         NoiseDensityStrength = 0;
         NoiseScaleStrength = 0;
         SpawnDistance = -1;
+        MaxCells = -1;
         CollisionDistance = -1;
         MaxColliders = -1;
     }
@@ -382,8 +392,8 @@ public partial class QuadSphereActor : Actor
     /// <summary>Number of foliage cells per cube-face side.</summary>
     [Limit(1, 1024), Tooltip("Number of foliage cells per cube-face side (1-1024). Rebuild terrain after changing. More cells reduce streaming granularity but increase actor count.")]
     public int FoliageCellsPerFace = 1024;
-    /// <summary>Maximum simultaneously streamed foliage cells, prioritized by camera distance.</summary>
-    [Limit(1, 4096), Tooltip("Maximum streamed foliage entry/cell pairs. The closest are prioritized when the limit is reached.")]
+    /// <summary>Maximum simultaneously streamed foliage entry/cell pairs across all entries.</summary>
+    [Limit(1, 4096), Tooltip("Total maximum streamed foliage entry/cell pairs across all entries, in addition to each entry's Max Cells limit. The closest are prioritized.")]
     public int MaxFoliageCells = 512;
     /// <summary>Maximum deterministic foliage placement attempts per update.</summary>
     [Limit(1, 100000), Tooltip("Maximum foliage placement attempts per update. Lower values reduce per-frame work but slow streaming.")]
@@ -2070,7 +2080,7 @@ public partial class QuadSphereActor : Actor
             chunk.Candidates.Add(new PrefabCandidate { Surface = (Vector3)surface, Entry = chunk.Entry, Yaw = PlacementYaw(_noiseSeed, root, chunk.Entry, attempt) });
     }
 
-    private bool TryPlacement(QuadSpherePrefabConfig config, int divisions, int root, int entry, int face, int x, int y, int attempt, bool diagnostics, out Double3 surface, out Double3 normal, QuadSphereFoliageNoiseType noiseType = QuadSphereFoliageNoiseType.Value, TerrainSnapshot terrain = null, bool useTerrainMesh = false)
+    private bool TryPlacement(QuadSpherePrefabConfig config, int divisions, int root, int entry, int face, int x, int y, int attempt, bool diagnostics, out Double3 surface, out Double3 normal, QuadSphereFoliageNoiseType noiseType = QuadSphereFoliageNoiseType.Value, TerrainSnapshot terrain = null, bool useTerrainMesh = false, bool smoothSlope = false)
     {
         terrain ??= _prefabSnapshot;
         surface = Double3.Zero;
@@ -2111,7 +2121,8 @@ public partial class QuadSphereActor : Actor
         }
         normal = SurfaceNormal(direction, terrain);
         double slope = terrain.SimpleSphere ? 0.0 : Math.Acos(Math.Clamp(Double3.Dot(normal, direction), -1.0, 1.0)) * (180.0 / Math.PI);
-        if (slope < config.MinSlope || slope > config.MaxSlope)
+        double slopeWeight = FoliageSlopeWeight(slope, config.MinSlope, config.MaxSlope, smoothSlope);
+        if (slopeWeight <= 0)
         {
             if (diagnostics) _prefabDiagnosticCounts.Slope++;
             return false;
@@ -2127,7 +2138,7 @@ public partial class QuadSphereActor : Actor
         double noiseWeight = 1.0;
         if (config.NoiseStrength > 0)
             noiseWeight -= Math.Clamp(config.NoiseStrength, 0, 1) * (1.0 - PlacementNoise(direction, config.NoiseFrequency, config.NoiseOctaves, config.SeedOffset, noiseType));
-        double probability = Math.Clamp(config.Probability, 0, 1) * biomeWeight * altitudeWeight * noiseWeight;
+        double probability = Math.Clamp(config.Probability, 0, 1) * biomeWeight * altitudeWeight * noiseWeight * slopeWeight;
         if (PrefabRandom(_noiseSeed, root, entry, attempt, 4) >= probability)
         {
             if (diagnostics) _prefabDiagnosticCounts.Probability++;
@@ -2135,6 +2146,13 @@ public partial class QuadSphereActor : Actor
         }
 
         return true;
+    }
+
+    private static double FoliageSlopeWeight(double slope, float minSlope, float maxSlope, bool smoothSlope)
+    {
+        if (slope < minSlope || slope > maxSlope)
+            return 0;
+        return smoothSlope && maxSlope > minSlope ? (maxSlope - slope) / ((double)maxSlope - minSlope) : 1.0;
     }
 
     private bool FoliageRemovedByBrush(Double3 direction, TerrainSnapshot terrain, int cell, int entry, int attempt)
@@ -2334,85 +2352,11 @@ public partial class QuadSphereActor : Actor
         {
             _foliageSelectionElapsed = 0;
             _foliageCellLimit = cellLimit;
-            var nearest = new PriorityQueue<((int Cell, int Entry) Key, double Distance), (double Distance, int Cell, int Entry)>();
-            var regions = new PriorityQueue<FoliageSearchRegion, double>();
-            var deferred = new Stack<(FoliageSearchRegion Region, double LowerBound)>();
-            var localCamera = (Double3)transform.WorldToLocal(camera);
-            // Include rounding from world-space transforms, including large translations.
-            double padding = (camera.Length + transform.Translation.Length + _radius * scale + 1.0) * 0.00001;
-            for (int entry = 0; entry < _foliageConfigs.Length; entry++)
-            {
-                double spawnDistance = FoliageEntrySpawnDistance(_foliageConfigs[entry]);
-                if (!double.IsFinite(spawnDistance) || spawnDistance <= 0 || _foliageConfigs[entry].Model == null ||
-                    !ValidFoliageNoise(_foliageConfigs[entry]))
-                    continue;
-                double localDistance = (spawnDistance + cellBounds) / minScale;
-                for (int face = 0; face < 6; face++)
-                {
-                    if (FoliageFaceRange(face, localCamera, localDistance, out int minX, out int maxX, out int minY, out int maxY))
-                        EnqueueFoliageRegion(regions, deferred, new FoliageSearchRegion { Face = face, Entry = entry, MinX = minX, MaxX = maxX, MinY = minY, MaxY = maxY, MaxDistance = spawnDistance + cellBounds }, camera, transform, scale, padding);
-                }
-            }
-            int eligible = 0;
-            while (regions.Count != 0 || deferred.Count != 0)
-            {
-                bool fromStack = deferred.Count != 0;
-                FoliageSearchRegion region;
-                double lowerBound;
-                if (fromStack)
-                {
-                    var item = deferred.Pop();
-                    region = item.Region;
-                    lowerBound = item.LowerBound;
-                }
-                else
-                    regions.TryDequeue(out region, out lowerBound);
-                if (eligible > cellLimit && lowerBound > nearest.Peek().Distance)
-                {
-                    if (!fromStack)
-                        break;
-                    continue;
-                }
-                if (region.MinX != region.MaxX || region.MinY != region.MaxY)
-                {
-                    var other = region;
-                    if (region.MaxX - region.MinX >= region.MaxY - region.MinY)
-                    {
-                        region.MaxX = (region.MinX + region.MaxX) / 2;
-                        other.MinX = region.MaxX + 1;
-                    }
-                    else
-                    {
-                        region.MaxY = (region.MinY + region.MaxY) / 2;
-                        other.MinY = region.MaxY + 1;
-                    }
-                    EnqueueFoliageRegion(regions, deferred, region, camera, transform, scale, padding);
-                    EnqueueFoliageRegion(regions, deferred, other, camera, transform, scale, padding);
-                    continue;
-                }
-                int cellKey = (region.Face * _foliageDivisions + region.MinY) * _foliageDivisions + region.MinX;
-                var key = (Cell: cellKey, Entry: region.Entry);
-                double distance = (camera - transform.LocalToWorld(FoliageCellCenter(region.Face, region.MinX, region.MinY))).Length;
-                if (!double.IsFinite(distance) || distance > region.MaxDistance)
-                    continue;
-                eligible++;
-                if (nearest.Count == cellLimit)
-                {
-                    var farthest = nearest.Peek();
-                    if (distance > farthest.Distance || (distance == farthest.Distance && key.CompareTo(farthest.Key) >= 0))
-                        continue;
-                    nearest.Dequeue();
-                }
-                nearest.Enqueue((key, distance), (-distance, -cellKey, -region.Entry));
-            }
-            _foliageCellsLimited = eligible > cellLimit;
+            var ordered = SelectFoliageCells(camera, transform, scale, minScale, cellBounds, cellLimit, out _foliageCellsLimited);
             var desired = new HashSet<(int Cell, int Entry)>();
-            var ordered = new List<((int Cell, int Entry) Key, double Distance)>(nearest.Count);
-            while (nearest.Count != 0)
+            foreach (var item in ordered)
             {
-                var item = nearest.Dequeue();
                 desired.Add(item.Key);
-                ordered.Add(item);
                 if (!_foliageCells.ContainsKey(item.Key))
                     _foliageCells.Add(item.Key, new FoliageCell { Entry = item.Key.Entry });
             }
@@ -2430,8 +2374,7 @@ public partial class QuadSphereActor : Actor
             if (remove.Count != 0)
                 _foliageCollisionElapsed = 0.1f;
             _foliageCellOrder.Clear();
-            ordered.Sort((a, b) => a.Distance != b.Distance ? a.Distance.CompareTo(b.Distance) : a.Key.CompareTo(b.Key));
-        foreach (var item in ordered)
+            foreach (var item in ordered)
                 _foliageCellOrder.Add(item.Key);
         }
 
@@ -2486,7 +2429,7 @@ public partial class QuadSphereActor : Actor
                     continue;
                 }
                 int attempt = cell.Attempt++;
-                if (TryPlacement(placement, _foliageDivisions, key, cell.Entry, face, x, y, attempt, false, out var surface, out var normal, config.NoiseType, _foliageSnapshot, true))
+                if (TryPlacement(placement, _foliageDivisions, key, cell.Entry, face, x, y, attempt, false, out var surface, out var normal, config.NoiseType, _foliageSnapshot, true, config.SmoothSlope))
                     AddFoliagePlacement(cell, config, surface, normal, key, attempt);
                 budget--;
             }
@@ -2504,6 +2447,106 @@ public partial class QuadSphereActor : Actor
             _foliageCollisionElapsed = 0;
             UpdateFoliageColliders(camera, transform, cellBounds);
         }
+    }
+
+    private List<((int Cell, int Entry) Key, double Distance)> SelectFoliageCells(Vector3 camera, Transform transform, double scale, double minScale, double cellBounds, int cellLimit, out bool limited)
+    {
+        var nearest = new SortedSet<(double Distance, int Cell, int Entry)>();
+        var perEntry = new SortedSet<(double Distance, int Cell, int Entry)>[_foliageConfigs.Length];
+        var entryLimits = new int[_foliageConfigs.Length];
+        var entryLimited = new bool[_foliageConfigs.Length];
+        var regions = new PriorityQueue<FoliageSearchRegion, double>();
+        var deferred = new Stack<(FoliageSearchRegion Region, double LowerBound)>();
+        var localCamera = (Double3)transform.WorldToLocal(camera);
+        double padding = (camera.Length + transform.Translation.Length + _radius * scale + 1.0) * 0.00001;
+        for (int entry = 0; entry < _foliageConfigs.Length; entry++)
+        {
+            var config = _foliageConfigs[entry];
+            int limit = FoliageEntryCellLimit(config, cellLimit);
+            double spawnDistance = FoliageEntrySpawnDistance(config);
+            if (limit == 0 || !double.IsFinite(spawnDistance) || spawnDistance <= 0 || config.Model == null || !ValidFoliageNoise(config))
+                continue;
+            entryLimits[entry] = limit;
+            perEntry[entry] = new SortedSet<(double Distance, int Cell, int Entry)>();
+            double localDistance = (spawnDistance + cellBounds) / minScale;
+            for (int face = 0; face < 6; face++)
+            {
+                if (FoliageFaceRange(face, localCamera, localDistance, out int minX, out int maxX, out int minY, out int maxY))
+                    EnqueueFoliageRegion(regions, deferred, new FoliageSearchRegion { Face = face, Entry = entry, MinX = minX, MaxX = maxX, MinY = minY, MaxY = maxY, MaxDistance = spawnDistance + cellBounds }, camera, transform, scale, padding);
+            }
+        }
+
+        limited = false;
+        while (regions.Count != 0 || deferred.Count != 0)
+        {
+            bool fromStack = deferred.Count != 0;
+            FoliageSearchRegion region;
+            double lowerBound;
+            if (fromStack)
+            {
+                var item = deferred.Pop();
+                region = item.Region;
+                lowerBound = item.LowerBound;
+            }
+            else
+                regions.TryDequeue(out region, out lowerBound);
+            if (limited && nearest.Count == cellLimit && lowerBound > nearest.Max.Distance)
+            {
+                if (!fromStack)
+                    break;
+                continue;
+            }
+            var entryCells = perEntry[region.Entry];
+            if (entryLimited[region.Entry] && entryCells.Count == entryLimits[region.Entry] && lowerBound > entryCells.Max.Distance)
+                continue;
+            if (region.MinX != region.MaxX || region.MinY != region.MaxY)
+            {
+                var other = region;
+                if (region.MaxX - region.MinX >= region.MaxY - region.MinY)
+                {
+                    region.MaxX = (region.MinX + region.MaxX) / 2;
+                    other.MinX = region.MaxX + 1;
+                }
+                else
+                {
+                    region.MaxY = (region.MinY + region.MaxY) / 2;
+                    other.MinY = region.MaxY + 1;
+                }
+                EnqueueFoliageRegion(regions, deferred, region, camera, transform, scale, padding);
+                EnqueueFoliageRegion(regions, deferred, other, camera, transform, scale, padding);
+                continue;
+            }
+            int cell = (region.Face * _foliageDivisions + region.MinY) * _foliageDivisions + region.MinX;
+            double distance = (camera - transform.LocalToWorld(FoliageCellCenter(region.Face, region.MinX, region.MinY))).Length;
+            if (!double.IsFinite(distance) || distance > region.MaxDistance)
+                continue;
+            var candidate = (Distance: distance, Cell: cell, Entry: region.Entry);
+            if (entryCells.Count == entryLimits[region.Entry])
+            {
+                limited = entryLimited[region.Entry] = true;
+                var farthest = entryCells.Max;
+                if (candidate.CompareTo(farthest) >= 0)
+                    continue;
+                entryCells.Remove(farthest);
+                nearest.Remove(farthest);
+            }
+            else if (nearest.Count == cellLimit)
+            {
+                limited = true;
+                var farthest = nearest.Max;
+                if (candidate.CompareTo(farthest) >= 0)
+                    continue;
+                nearest.Remove(farthest);
+                perEntry[farthest.Entry].Remove(farthest);
+            }
+            nearest.Add(candidate);
+            entryCells.Add(candidate);
+        }
+
+        var result = new List<((int Cell, int Entry) Key, double Distance)>(nearest.Count);
+        foreach (var item in nearest)
+            result.Add(((item.Cell, item.Entry), item.Distance));
+        return result;
     }
 
     private double FoliageExpectedAttempts(QuadSphereFoliageConfig config)
@@ -2632,6 +2675,9 @@ public partial class QuadSphereActor : Actor
 
     private double FoliageEntrySpawnDistance(QuadSphereFoliageConfig config) =>
         config.SpawnDistance == -1 ? FoliageSpawnDistance : config.SpawnDistance;
+
+    private static int FoliageEntryCellLimit(QuadSphereFoliageConfig config, int globalLimit) =>
+        config.MaxCells == -1 ? globalLimit : Math.Clamp(config.MaxCells, 0, globalLimit);
 
     private double FoliageEntryCollisionDistance(QuadSphereFoliageConfig config) =>
         config.CollisionDistance == -1 ? FoliageCollisionDistance : config.CollisionDistance;

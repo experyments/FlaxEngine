@@ -1,5 +1,6 @@
 #if FLAX_TESTS
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using FlaxEngine;
 using NUnit.Framework;
@@ -87,6 +88,78 @@ public partial class QuadSphereActor
             Assert.That(ValidPrefabConfig(FoliagePlacementSettings(config)), Is.True);
         }
 #endif
+
+        [Test]
+        public void FoliageCellSelectionRespectsPerEntryAndGlobalLimits()
+        {
+            var planet = new QuadSphereActor();
+            var model = Content.CreateVirtualAsset<Model>();
+            try
+            {
+                Assert.That(model, Is.Not.Null);
+                planet._radius = 1000;
+                planet._foliageDivisions = 8;
+                planet._foliageConfigs = new[]
+                {
+                    new QuadSphereFoliageConfig { Model = model, SpawnDistance = 1800, MaxCells = 2 },
+                    new QuadSphereFoliageConfig { Model = model, SpawnDistance = 1800, MaxCells = 5 },
+                    new QuadSphereFoliageConfig { Model = model, SpawnDistance = 1800, MaxCells = 0 },
+                    new QuadSphereFoliageConfig { Model = model, SpawnDistance = 1800 },
+                };
+                var transform = new Transform(new Vector3(300, -200, 400), Quaternion.RotationAxis(Float3.UnitZ, 0.4f), new Float3(2, 1, 3));
+                var cameras = new[]
+                {
+                    transform.LocalToWorld(new Vector3(1000, 0, 0)),
+                    transform.LocalToWorld(new Vector3(707, 707, 0)),
+                    transform.LocalToWorld(Vector3.Zero),
+                };
+                foreach (var camera in cameras)
+                foreach (int globalLimit in new[] { 1, 6, 20 })
+                {
+                    const double bounds = 50;
+                    var candidates = new List<(double Distance, int Cell, int Entry)>();
+                    for (int entry = 0; entry < planet._foliageConfigs.Length; entry++)
+                    {
+                        if (FoliageEntryCellLimit(planet._foliageConfigs[entry], globalLimit) == 0)
+                            continue;
+                        for (int face = 0; face < 6; face++)
+                        for (int y = 0; y < planet._foliageDivisions; y++)
+                        for (int x = 0; x < planet._foliageDivisions; x++)
+                        {
+                            double distance = (camera - transform.LocalToWorld(planet.FoliageCellCenter(face, x, y))).Length;
+                            if (distance <= planet._foliageConfigs[entry].SpawnDistance + bounds)
+                                candidates.Add((distance, (face * planet._foliageDivisions + y) * planet._foliageDivisions + x, entry));
+                        }
+                    }
+                    candidates.Sort();
+                    var expected = new List<(double Distance, int Cell, int Entry)>();
+                    var counts = new int[planet._foliageConfigs.Length];
+                    foreach (var candidate in candidates)
+                    {
+                        if (counts[candidate.Entry] >= FoliageEntryCellLimit(planet._foliageConfigs[candidate.Entry], globalLimit))
+                            continue;
+                        if (expected.Count == globalLimit)
+                            break;
+                        expected.Add(candidate);
+                        counts[candidate.Entry]++;
+                    }
+                    var selected = planet.SelectFoliageCells(camera, transform, 3, 1, bounds, globalLimit, out bool limited);
+                    Assert.That(selected.Count, Is.EqualTo(expected.Count));
+                    for (int i = 0; i < expected.Count; i++)
+                    {
+                        Assert.That(selected[i].Key, Is.EqualTo((expected[i].Cell, expected[i].Entry)));
+                        Assert.That(selected[i].Distance, Is.EqualTo(expected[i].Distance));
+                    }
+                    Assert.That(limited, Is.True);
+                }
+            }
+            finally
+            {
+                if (model != null)
+                    FlaxEngine.Object.Destroy(model);
+                FlaxEngine.Object.Destroy(planet);
+            }
+        }
 
         [Test]
         public void PrefabRandomIsStableAndDependsOnPlacementIdentity()
@@ -232,6 +305,73 @@ public partial class QuadSphereActor
                 config.Biomes = QuadSpherePrefabBiomes.Layer1;
                 for (int attempt = 0; attempt < 64; attempt++)
                     Assert.That(planet.TryPlacement(config, 8, 0, 0, 0, 0, 0, attempt, false, out _, out _), Is.False);
+            }
+            finally
+            {
+                FlaxEngine.Object.Destroy(planet);
+            }
+        }
+
+        [Test]
+        public void FoliageSlopeFadeRespectsBoundsAndEqualLimits()
+        {
+            Assert.That(FoliageSlopeWeight(9, 10, 50, true), Is.Zero);
+            Assert.That(FoliageSlopeWeight(10, 10, 50, true), Is.EqualTo(1));
+            Assert.That(FoliageSlopeWeight(20, 10, 50, true), Is.EqualTo(0.75).Within(1e-12));
+            Assert.That(FoliageSlopeWeight(30, 10, 50, true), Is.EqualTo(0.5).Within(1e-12));
+            Assert.That(FoliageSlopeWeight(50, 10, 50, true), Is.Zero);
+            Assert.That(FoliageSlopeWeight(51, 10, 50, true), Is.Zero);
+            Assert.That(FoliageSlopeWeight(30, 10, 50, false), Is.EqualTo(1));
+            Assert.That(FoliageSlopeWeight(50, 10, 50, false), Is.EqualTo(1));
+            Assert.That(FoliageSlopeWeight(20, 20, 20, true), Is.EqualTo(1));
+            Assert.That(FoliageSlopeWeight(19, 20, 20, true), Is.Zero);
+            Assert.That(FoliageSlopeWeight(21, 20, 20, true), Is.Zero);
+        }
+
+        [Test]
+        public void FoliageSlopeFadeMultipliesPlacementProbabilityDeterministically()
+        {
+            var planet = new QuadSphereActor();
+            try
+            {
+                var settings = CreateSettings();
+                settings.NoiseHeight = 50000;
+                settings.NoiseFrequency = 4;
+                settings.NoiseOctaves = 3;
+                settings.Brushes = new[]
+                {
+                    new BrushData { Mode = QuadSphereBrushMode.Carve, Position = (Vector3)(Direction(0, -0.5, -0.5) * settings.Radius), Radius = 20000, Falloff = 0.5f, Depth = 3000 },
+                };
+                var geometry = BuildPatch((0, 0, 0, 0), settings, CancellationToken.None);
+                planet._patches.Add((0, 0, 0, 0), new Patch { Origin = geometry.Origin, Vertices = geometry.Vertices, Committed = true });
+                planet._chunksPerPatch = settings.ChunksPerPatch;
+                planet._resolution = settings.Resolution;
+                planet._noiseSeed = 12345;
+                var foliage = new QuadSphereFoliageConfig { Probability = 0.8f, NoiseDensityStrength = 0.4f, SmoothSlope = true };
+                var config = FoliagePlacementSettings(foliage);
+                int accepted = 0, removed = 0;
+                for (int attempt = 0; attempt < 512; attempt++)
+                {
+                    bool hard = planet.TryPlacement(config, 2, 0, 0, 0, 0, 0, attempt, false, out var surface, out var normal, terrain: settings, useTerrainMesh: true);
+                    bool smooth = planet.TryPlacement(config, 2, 0, 0, 0, 0, 0, attempt, false, out _, out _, terrain: settings, useTerrainMesh: true, smoothSlope: foliage.SmoothSlope);
+                    bool repeated = planet.TryPlacement(config, 2, 0, 0, 0, 0, 0, attempt, false, out _, out _, terrain: settings, useTerrainMesh: true, smoothSlope: foliage.SmoothSlope);
+                    Assert.That(repeated, Is.EqualTo(smooth));
+                    if (!hard)
+                    {
+                        Assert.That(smooth, Is.False);
+                        continue;
+                    }
+                    var direction = Double3.Normalize(surface);
+                    double slope = Math.Acos(Math.Clamp(Double3.Dot(normal, direction), -1.0, 1.0)) * (180.0 / Math.PI);
+                    double noise = planet.PlacementNoise(direction, config.NoiseFrequency, config.NoiseOctaves, config.SeedOffset, foliage.NoiseType);
+                    double probability = config.Probability * PrefabBiomeWeight(direction, config.Biomes, settings)
+                        * (1.0 - config.NoiseStrength * (1.0 - noise)) * (1.0 - slope / 90.0);
+                    Assert.That(smooth, Is.EqualTo(PrefabRandom(planet._noiseSeed, 0, 0, attempt, 4) < probability));
+                    if (smooth) accepted++;
+                    else removed++;
+                }
+                Assert.That(accepted, Is.GreaterThan(0));
+                Assert.That(removed, Is.GreaterThan(0));
             }
             finally
             {
@@ -449,18 +589,21 @@ public partial class QuadSphereActor
         {
             var legacy = FlaxEngine.Json.JsonSerializer.Deserialize<QuadSphereFoliageConfig>("{\"Density\":2}");
             Assert.That(legacy.SpawnDistance, Is.EqualTo(-1));
+            Assert.That(legacy.MaxCells, Is.EqualTo(-1));
             Assert.That(legacy.CollisionDistance, Is.EqualTo(-1));
             Assert.That(legacy.MaxColliders, Is.EqualTo(-1));
             Assert.That(legacy.Shadows, Is.EqualTo(QuadSphereFoliageShadows.Legacy));
             Assert.That(legacy.AlignToGroundNormal, Is.False);
+            Assert.That(legacy.SmoothSlope, Is.False);
             Assert.That(legacy.NoiseType, Is.EqualTo(QuadSphereFoliageNoiseType.Value));
             Assert.That(legacy.NoiseFrequency, Is.EqualTo(4));
             Assert.That(legacy.NoiseOctaves, Is.EqualTo(3));
             Assert.That(legacy.NoiseDensityStrength, Is.Zero);
             Assert.That(legacy.NoiseScaleStrength, Is.Zero);
             var aligned = FlaxEngine.Json.JsonSerializer.Deserialize<QuadSphereFoliageConfig>(
-                FlaxEngine.Json.JsonSerializer.Serialize(new QuadSphereFoliageConfig { AlignToGroundNormal = true, NoiseType = QuadSphereFoliageNoiseType.RidgedPerlin, NoiseFrequency = 8, NoiseOctaves = 4, NoiseSeedOffset = 17, NoiseDensityStrength = 0.6f, NoiseScaleStrength = 0.8f }));
+                FlaxEngine.Json.JsonSerializer.Serialize(new QuadSphereFoliageConfig { AlignToGroundNormal = true, SmoothSlope = true, NoiseType = QuadSphereFoliageNoiseType.RidgedPerlin, NoiseFrequency = 8, NoiseOctaves = 4, NoiseSeedOffset = 17, NoiseDensityStrength = 0.6f, NoiseScaleStrength = 0.8f }));
             Assert.That(aligned.AlignToGroundNormal, Is.True);
+            Assert.That(aligned.SmoothSlope, Is.True);
             Assert.That(aligned.NoiseType, Is.EqualTo(QuadSphereFoliageNoiseType.RidgedPerlin));
             Assert.That(aligned.NoiseFrequency, Is.EqualTo(8));
             Assert.That(aligned.NoiseOctaves, Is.EqualTo(4));
@@ -468,10 +611,14 @@ public partial class QuadSphereActor
             Assert.That(aligned.NoiseDensityStrength, Is.EqualTo(0.6f));
             Assert.That(aligned.NoiseScaleStrength, Is.EqualTo(0.8f));
             var disabled = FlaxEngine.Json.JsonSerializer.Deserialize<QuadSphereFoliageConfig>(
-                "{\"SpawnDistance\":0,\"CollisionDistance\":0,\"MaxColliders\":0}");
+                "{\"SpawnDistance\":0,\"MaxCells\":0,\"CollisionDistance\":0,\"MaxColliders\":0}");
             Assert.That(disabled.SpawnDistance, Is.Zero);
+            Assert.That(disabled.MaxCells, Is.Zero);
             Assert.That(disabled.CollisionDistance, Is.Zero);
             Assert.That(disabled.MaxColliders, Is.Zero);
+            var limited = FlaxEngine.Json.JsonSerializer.Deserialize<QuadSphereFoliageConfig>(
+                FlaxEngine.Json.JsonSerializer.Serialize(new QuadSphereFoliageConfig { MaxCells = 17 }));
+            Assert.That(limited.MaxCells, Is.EqualTo(17));
         }
 
         [Test]
